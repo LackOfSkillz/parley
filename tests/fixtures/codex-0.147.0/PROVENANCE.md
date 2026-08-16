@@ -26,11 +26,18 @@ token counts only: no quota, no rate-limit, no reset, no retry-after.
 ## What is NOT captured
 
 **A real usage-limit exhaustion (HTTP 429).** It cannot be forced on demand
-without deliberately burning a plan allowance. The classifier therefore treats
-429 / rate-limit as `limited` **by structural analogy to the proven envelope**,
-and that specific status has not been observed here. Until a 429 fixture is
-captured, `limited` is a structurally-supported but empirically-unconfirmed
-classification, and it is labelled as such in code.
+without deliberately burning a plan allowance. Under the owner-approved spec
+amendment, the classifier may infer a limit from the *proven envelope shape*
+carrying an unobserved status — but must record that weaker evidence rather than
+disguise it. Every `LimitInfo` therefore carries `evidence="structural"` for this
+branch, alongside `source="json"`.
+
+`source` says where the signal came from; `evidence` says how strong it is. They
+are independent, because `source="json"` alone would let inference read as
+capture.
+
+**Regrade on capture.** The first time a real exhaustion occurs in normal use,
+commit the fixture here and change that branch to `evidence="observed"`.
 
 The captured non-limit failures ARE used as false-positive coverage: they must
 never classify as `limited`.

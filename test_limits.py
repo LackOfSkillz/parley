@@ -168,34 +168,40 @@ class RateLimitsAreIdentified(unittest.TestCase):
         self.assertTrue(is_blind(info))
 
 
-class StderrHeuristicIsVersionPinned(unittest.TestCase):
-    """Prose is not a contract. It must not be inherited by unknown builds."""
+class EvidenceGradeIsHonest(unittest.TestCase):
+    """source says WHERE the signal came from; evidence says HOW STRONG it is.
 
-    TEXT = "Error: usage limit reached, try again in 2 hours"
+    They are independent on purpose: source="json" alone would let an inferred
+    status read as a captured one.
+    """
 
-    def test_verified_version_may_use_the_heuristic(self):
-        info = classify("", self.TEXT, "0.147.0")
-        self.assertIsNotNone(info)
-        self.assertEqual(info.source, "stderr_heuristic")
-        self.assertEqual(info.retry_after_seconds, 7200)
-
-    def test_unknown_version_does_not_inherit_the_heuristic(self):
-        self.assertIsNone(classify("", self.TEXT, "9.9.9"))
-
-    def test_absent_version_does_not_inherit_the_heuristic(self):
-        self.assertIsNone(classify("", self.TEXT, None))
-
-    def test_machine_readable_path_works_for_unknown_versions(self):
-        # The envelope is structured, so it does NOT need version pinning.
-        info = classify(
+    def limited(self):
+        return classify(
             event(
                 {"status": 429, "error": {"type": "rate_limit_error", "message": "x"}}
-            ),
-            "",
-            "9.9.9",
+            )
         )
-        self.assertIsNotNone(info)
+
+    def test_inferred_429_is_graded_structural_not_observed(self):
+        info = self.limited()
         self.assertEqual(info.source, "json")
+        self.assertEqual(info.evidence, "structural")
+
+    def test_evidence_grade_survives_serialisation(self):
+        self.assertEqual(self.limited().to_json()["evidence"], "structural")
+
+
+class ProseDetectionIsNotImplemented(unittest.TestCase):
+    """No stderr limit signature has captured evidence, so none is matched."""
+
+    def test_rate_limit_prose_on_stderr_is_not_a_limit(self):
+        for text in (
+            "Error: usage limit reached, try again in 2 hours",
+            "429 Too Many Requests",
+            "rate limit exceeded",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(classify("", text, "0.147.0"))
 
 
 class WaitBounds(unittest.TestCase):
@@ -206,7 +212,15 @@ class WaitBounds(unittest.TestCase):
     """
 
     def info(self, retry=None):
-        return LimitInfo("rate", "r", "json", retry, None, DETECTOR_VERSION)
+        return LimitInfo(
+            kind="rate",
+            reason="r",
+            source="json",
+            evidence="structural",
+            retry_after_seconds=retry,
+            reset_at=None,
+            detector_version=DETECTOR_VERSION,
+        )
 
     def test_provider_time_gains_the_safety_margin(self):
         self.assertEqual(wait_seconds(self.info(300), attempt=1), 305)

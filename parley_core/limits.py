@@ -14,11 +14,20 @@ The `message` is a JSON *string* holding a nested payload with an HTTP status an
 an error type. That is a structured discriminator, not prose, so detection sits
 at precedence level 1 of the spec's contract.
 
-HONEST GAP: no HTTP 429 exhaustion has been captured on this machine -- forcing
-one means deliberately burning a plan allowance. The 429 branch is therefore
-supported by structural analogy to the proven envelope and is NOT
-empirically confirmed. `LimitInfo.source` records which of those it was, so a
-transcript never overstates its own evidence.
+EVIDENCE GRADES. No HTTP 429 exhaustion has been captured here -- forcing one
+means deliberately burning a plan allowance -- so the 429 branch infers from the
+proven envelope. Every LimitInfo therefore carries BOTH:
+
+    source   = where the signal came from        (json)
+    evidence = how strong that signal is         (observed | structural)
+
+They are independent, because `source="json"` alone would let inference read as
+capture. Regrade to `observed` and commit the fixture the first time a real
+exhaustion occurs.
+
+Prose-only stderr detection is deliberately NOT implemented: unlike the JSON
+envelope, no stderr limit signature has captured evidence for its shape, and
+matching unproven wording is how "any error" becomes "sleep for an hour".
 
 This module classifies and computes wait bounds. It never sleeps and never
 retries: PARLEY-V2-007 owns that, behind an explicit opt-in.
@@ -32,11 +41,6 @@ from dataclasses import asdict, dataclass
 
 DETECTOR_VERSION = "codex/0.147.0/1"
 
-# Observed CLI versions this detector has been checked against. An unknown
-# version may still use the machine-readable path -- the envelope is stable
-# enough to parse -- but must NOT inherit the stderr heuristic unverified.
-VERIFIED_VERSIONS = frozenset({"0.147.0"})
-
 _RATE_STATUS = 429
 _LIMIT_TYPES = frozenset(
     {"rate_limit_error", "rate_limit_exceeded", "insufficient_quota"}
@@ -44,10 +48,6 @@ _LIMIT_TYPES = frozenset(
 
 # Deliberately narrow. Broad matching is how "any error" becomes "sleep for an
 # hour", which is the failure mode this whole design exists to avoid.
-_STDERR_SIGNATURE = re.compile(
-    r"\b(rate limit(?:ed)?|usage limit|quota exceeded|too many requests)\b",
-    re.IGNORECASE,
-)
 _RESET_HINT = re.compile(
     r"(?:try again|retry|resets?)\D{0,20}?(\d+)\s*(second|minute|hour)s?", re.IGNORECASE
 )
@@ -58,7 +58,8 @@ _SECONDS = {"second": 1, "minute": 60, "hour": 3600}
 class LimitInfo:
     kind: str  # "plan" | "rate"
     reason: str
-    source: str  # "json" | "stderr_heuristic"
+    source: str  # where the signal came from: "json"
+    evidence: str  # how strong it is: "observed" | "structural"
     retry_after_seconds: int | None
     reset_at: str | None
     detector_version: str
@@ -98,7 +99,7 @@ def _retry_after(text: str) -> int | None:
 
 
 def classify(
-    stdout: str, stderr: str, cli_version: str | None = None
+    stdout: str, stderr: str = "", cli_version: str | None = None
 ) -> LimitInfo | None:
     """Return LimitInfo only for a positively identified recoverable limit.
 
@@ -118,25 +119,14 @@ def classify(
                 kind="plan" if "quota" in etype or "usage" in msg.lower() else "rate",
                 reason=msg[:300] or f"status {status} {etype}".strip(),
                 source="json",
+                # The envelope is fixture-backed; this status value is not.
+                evidence="structural",
                 retry_after_seconds=_retry_after(msg),
                 reset_at=payload.get("reset_at") or err.get("reset_at"),
                 detector_version=DETECTOR_VERSION,
             )
 
-    # 2. version-pinned stderr signature. Refused for unverified CLI versions:
-    #    prose is not a contract, and inheriting it blindly would let an unknown
-    #    build's unrelated wording trigger unattended sleeping.
-    if cli_version in VERIFIED_VERSIONS:
-        text = stderr or ""
-        if _STDERR_SIGNATURE.search(text):
-            return LimitInfo(
-                kind="rate",
-                reason=text.strip()[:300],
-                source="stderr_heuristic",
-                retry_after_seconds=_retry_after(text),
-                reset_at=None,
-                detector_version=DETECTOR_VERSION,
-            )
+    # 2. prose-only detection is unauthorised -- see the module docstring.
 
     # 3. not a limit
     return None

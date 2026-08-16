@@ -973,6 +973,27 @@ A session that no longer exists will not become valid by sleeping. Automatic ses
 
 Official OpenAI documentation confirms that Codex has plan-based usage limits and that interactive `/usage` exposes usage/reset information. It does **not** document a stable non-interactive `codex exec --json` rate-limit event, exit code, retry-after field, or reset timestamp. The installed package is Codex CLI 0.147.0, but the current review environment cannot force an exhaustion event. [OpenAI pricing documentation](https://learn.chatgpt.com/docs/pricing), [Codex developer commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
 
+OWNER AMENDMENT (approved): structural inference is permitted, on condition that
+its weaker evidence is recorded rather than disguised. A detector may classify a
+limit from a *proven envelope shape* carrying an unobserved value — for example an
+HTTP 429 inside the `turn.failed` payload whose structure is fixture-backed but
+whose status has never been captured. Every `LimitInfo` therefore carries an
+`evidence` grade:
+
+```text
+evidence = observed   # this exact condition was captured in a fixture
+         | structural # the envelope is fixture-backed; this value is inferred
+```
+
+`source` records WHERE the signal came from; `evidence` records HOW STRONG it is.
+The two are independent, and `source="json"` alone is not permitted to imply
+observation. A transcript must never present inference as capture. When a real
+exhaustion is captured, the branch is regraded to `observed` and the fixture
+committed.
+
+Prose-only detection remains unauthorised: unlike the JSON envelope, no stderr
+limit signature has any captured evidence for its shape, so it is not implemented.
+
 Therefore detection must use this precedence:
 
 1. A machine-readable JSON event proven by a captured, versioned fixture.
