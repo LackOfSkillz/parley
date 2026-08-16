@@ -55,8 +55,12 @@ _DECLARED: dict[str, RunnerCapabilities] = {
     ),
 }
 
+# PARLEY-V2-002 trusts only the provider whose argv is actually rendered and
+# tested. Ollama and LM Studio become supported when PARLEY-V2-003 emits and
+# tests `--oss --local-provider`; accepting them earlier would let a spec claim
+# a local provider while silently launching the OpenAI path.
 _PROVIDERS: dict[str, frozenset[str]] = {
-    "codex": frozenset({"openai", "ollama", "lmstudio"}),
+    "codex": frozenset({"openai"}),
 }
 
 
@@ -88,10 +92,25 @@ def resolve_spec(
 def admit(spec: RunnerSpec, access_policy: AccessPolicy) -> None:
     """Refuse an access policy the adapter cannot enforce.
 
+    Authoritative: the decision is made against the CODE-DECLARED capability set
+    for the spec's driver, never against the capabilities carried on the spec.
+    A RunnerSpec is a value object and can be constructed by hand, so trusting
+    its own capabilities would let a forged one grant itself write access.
+
     Called at admission and again defensively inside the runner. No subprocess
     launches and no prompt record is written for an inadmissible policy.
     """
-    if not spec.capabilities.supports(access_policy):
+    declared = declared_capabilities(spec.driver)
+    if spec.capabilities != declared:
+        raise CapabilityError(
+            f"runner spec for {spec.driver!r} carries capabilities that differ "
+            f"from the code-declared set; refusing to trust it"
+        )
+    if spec.provider not in _PROVIDERS.get(spec.driver, frozenset()):
+        raise CapabilityError(
+            f"driver {spec.driver!r} does not support provider {spec.provider!r}"
+        )
+    if not declared.supports(access_policy):
         raise CapabilityError(
             f"runner {spec.driver}/{spec.provider} cannot enforce "
             f"access policy {access_policy.value!r}"

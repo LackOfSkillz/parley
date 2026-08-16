@@ -639,5 +639,36 @@ class ConsoleDeliversAnswers(Harness):
         self.assertEqual(self.records()[1]["text"], "plain answer")
 
 
+class LegacyFailureWording(unittest.TestCase):
+    """The exact operator-facing hints are part of the characterized surface."""
+
+    CASES = (
+        ("error: unexpected argument '-C' found", None, "a bug in parley.py"),
+        ("Error: not logged in", None, "codex login"),
+        ("429 rate limit exceeded", None, "Plan allowance"),
+        ("no rollout found for thread id abc", "abc", "--new-thread"),
+        ("something else entirely", None, ""),
+    )
+
+    def test_hints_match_the_pre_refactor_wording(self):
+        from parley_core.codex_runner import classify_failure
+
+        for err, resume, expected in self.CASES:
+            with self.subTest(err=err):
+                hint = classify_failure(err, resume)
+                if expected:
+                    self.assertIn(expected, hint)
+                else:
+                    self.assertEqual(hint, "")
+
+    def test_usage_error_is_not_mistaken_for_an_expired_session(self):
+        from parley_core.codex_runner import classify_failure
+
+        # help text quotes the word "session"; specificity order must win
+        hint = classify_failure("Usage: codex exec resume [SESSION_ID]", "abc")
+        self.assertIn("a bug in parley.py", hint)
+        self.assertNotIn("--new-thread", hint)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

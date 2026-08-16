@@ -217,6 +217,10 @@ def run_codex(
     except runners.RunnerError as e:
         # The legacy surface reports failure as SystemExit with a plain message.
         raise SystemExit(str(e)) from None
+    if not result.usable:
+        # Expected failures arrive as structured results; the legacy surface has
+        # always reported them as SystemExit carrying exactly this text.
+        raise SystemExit(result.metadata.diagnostic or "codex produced no answer")
     return result.answer, result.session, result.partial
 
 

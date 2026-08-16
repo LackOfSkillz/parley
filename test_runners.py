@@ -9,7 +9,6 @@ Codex-specific detail leaks into the generic contract.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -49,10 +48,16 @@ class CapabilityAdmission(unittest.TestCase):
         with self.assertRaises(runners.RunnerError):
             runners.resolve_spec("codex", "anthropic")
 
-    def test_local_providers_are_accepted(self):
-        for p in ("ollama", "lmstudio"):
-            with self.subTest(provider=p):
-                self.assertEqual(runners.resolve_spec("codex", p).provider, p)
+    def test_local_providers_are_not_yet_supported(self):
+        """V2-002 trusts only the provider whose argv it actually renders.
+
+        build_argv() never emits --oss/--local-provider, so accepting ollama or
+        lmstudio here would produce a spec claiming a local provider while
+        launching the OpenAI path. PARLEY-V2-003 enables them.
+        """
+        for prov in ("ollama", "lmstudio"):
+            with self.subTest(provider=prov), self.assertRaises(runners.RunnerError):
+                runners.resolve_spec("codex", prov)
 
     def test_read_only_is_admitted(self):
         runners.admit(runners.resolve_spec(), AccessPolicy.READ_ONLY)  # must not raise
@@ -75,7 +80,24 @@ class CapabilityAdmission(unittest.TestCase):
         self.assertFalse(runners.resolve_spec().capabilities.workspace_write)
 
 
+FORGED_WRITE_SPEC = RunnerSpec(
+    "codex",
+    "openai",
+    None,
+    RunnerCapabilities(persistent_sessions=True, read_only=True, workspace_write=True),
+)
+
+
 class NoLaunchWhenInadmissible(unittest.TestCase):
+    def test_a_forged_spec_cannot_spawn_a_writable_process(self):
+        runner = codex_runner.CodexRunner(FORGED_WRITE_SPEC, binary="codex")
+        with (
+            mock.patch.object(codex_runner.subprocess, "run") as spawn,
+            self.assertRaises(runners.CapabilityError),
+        ):
+            runner.run("p", Path.cwd(), None, AccessPolicy.WORKSPACE_WRITE)
+        spawn.assert_not_called()
+
     def test_runner_refuses_before_spawning_a_process(self):
         spec = runners.resolve_spec()
         runner = codex_runner.CodexRunner(spec, binary="codex")
@@ -119,20 +141,6 @@ class ResultShape(unittest.TestCase):
 
         json.dumps(RunMetadata(exit_code=1, duration_ms=5).to_json())
         json.dumps(runners.resolve_spec().to_json())
-
-    def test_timeout_maps_to_a_runner_error_not_a_silent_result(self):
-        spec = runners.resolve_spec()
-        runner = codex_runner.CodexRunner(spec, binary="codex", timeout=1)
-        with (
-            mock.patch.object(
-                codex_runner.subprocess,
-                "run",
-                side_effect=subprocess.TimeoutExpired(cmd="codex", timeout=1),
-            ),
-            self.assertRaises(runners.RunnerError) as ctx,
-        ):
-            runner.run("p", Path.cwd(), None, AccessPolicy.READ_ONLY)
-        self.assertIn("timed out", str(ctx.exception))
 
 
 class PolicyReachesArgv(unittest.TestCase):

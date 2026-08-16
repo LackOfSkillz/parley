@@ -119,7 +119,7 @@ def classify_failure(err: str, resume_id: str | None) -> str:
     """
     low = err.lower()
     if "unexpected argument" in low or "usage:" in low:
-        return "\n  Malformed codex invocation -- a bug in Parley, not your session."
+        return "\n  Malformed codex invocation -- a bug in parley.py, not your session."
     if "login" in low or "not logged in" in low or "unauthor" in low:
         return "\n  Run `codex login` and sign in with your ChatGPT account."
     if "rate" in low or "quota" in low or "limit" in low:
@@ -186,9 +186,21 @@ class CodexRunner:
             )
         except subprocess.TimeoutExpired:
             discard()
-            raise RunnerError(
-                f"codex timed out after {self.timeout}s (raise with --timeout)"
-            ) from None
+            # An expected outcome, so a structured result rather than an error.
+            # RunnerError stays reserved for launch failure, unreadable retained
+            # output, and unexpected infrastructure faults.
+            return RunResult(
+                answer="",
+                session=session,
+                status=RunStatus.TIMED_OUT,
+                metadata=RunMetadata(
+                    exit_code=None,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    diagnostic=(
+                        f"codex timed out after {self.timeout}s (raise with --timeout)"
+                    ),
+                ),
+            )
         except FileNotFoundError:
             discard()
             raise RunnerError("could not execute the codex CLI") from None
