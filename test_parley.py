@@ -281,6 +281,8 @@ class FailureRecording(unittest.TestCase):
         self.assertEqual(recs[1]["role"], "gpt")
         self.assertNotIn("error", recs[1])
         self.assertEqual(recs[1]["text"], "THE ANSWER")
+
+
 class ConsoleEncoding(unittest.TestCase):
     """A legacy console code page must not withhold an already-completed answer.
 
@@ -324,6 +326,7 @@ class ConsoleEncoding(unittest.TestCase):
             mock.patch.object(parley.sys, "stderr", Hostile()),
         ):
             parley.use_utf8_console()  # must not raise
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

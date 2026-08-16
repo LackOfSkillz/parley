@@ -557,6 +557,8 @@ class CodexCommandSemantics(unittest.TestCase):
             self.assertEqual(captured["cwd"], str(Path(d)))
             self.assertIs(captured["check"], False)
             self.assertEqual(captured["timeout"], 10)
+
+
 class ConsoleDeliversAnswers(Harness):
     """PARLEY-V2-001A: the real output path must survive a legacy code page.
 
@@ -634,6 +636,7 @@ class ConsoleDeliversAnswers(Harness):
         stream = self.LegacyStream(reconfigurable=False)
         self._run(stream, "plain answer")
         self.assertEqual(self.records()[1]["text"], "plain answer")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
