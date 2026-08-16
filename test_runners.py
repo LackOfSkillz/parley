@@ -221,9 +221,14 @@ class ExecutionOutcomes(unittest.TestCase):
 
 
 class LegacyWrapperTranslation(unittest.TestCase):
-    """run_codex() must turn unusable results back into the legacy SystemExit."""
+    """run_codex() must turn unusable results back into the legacy SystemExit.
 
-    def test_timeout_becomes_systemexit_with_the_legacy_text(self):
+    Asserted by EXACT equality, not substring: the operator-facing text -- exit
+    code, stderr, newline, indentation and hint -- is the characterized surface,
+    and a substring check would tolerate any of it drifting.
+    """
+
+    def test_timeout_becomes_the_exact_legacy_message(self):
         with (
             mock.patch.object(parley, "codex_bin", return_value="codex"),
             mock.patch.object(
@@ -234,10 +239,11 @@ class LegacyWrapperTranslation(unittest.TestCase):
             self.assertRaises(SystemExit) as ctx,
         ):
             parley.run_codex("p", Path.cwd(), None, None, 7)
-        self.assertIn("codex timed out after 7s", str(ctx.exception))
-        self.assertIn("--timeout", str(ctx.exception))
+        self.assertEqual(
+            str(ctx.exception), "codex timed out after 7s (raise with --timeout)"
+        )
 
-    def test_failure_becomes_systemexit_with_exit_code_and_hint(self):
+    def test_failure_becomes_the_exact_legacy_message(self):
         proc = subprocess.CompletedProcess(
             [], 1, stdout="", stderr="Error: not logged in"
         )
@@ -249,9 +255,11 @@ class LegacyWrapperTranslation(unittest.TestCase):
             self.assertRaises(SystemExit) as ctx,
         ):
             parley.run_codex("p", Path.cwd(), None, None, 10)
-        msg = str(ctx.exception)
-        self.assertIn("codex exited 1", msg)
-        self.assertIn("codex login", msg)  # the hint survives the translation
+        self.assertEqual(
+            str(ctx.exception),
+            "codex exited 1: Error: not logged in\n"
+            "  Run `codex login` and sign in with your ChatGPT account.",
+        )
 
 
 if __name__ == "__main__":
