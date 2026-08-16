@@ -161,11 +161,19 @@ depending on plan and model. Dispatch reviews are heavy calls.
 python -m unittest discover -p "test_*.py"
 ```
 
-26 stdlib tests, no framework. Each one corresponds to a defect found in review,
-so a failure means a guarantee stated above has stopped being true: sandbox
-pinning on both fresh and resumed turns, transcript-id collision resistance,
-answer preservation when cleanup or reading fails, non-zero-exit policy, failure
-recording, and viewer path traversal.
+65 stdlib tests, no framework, in two files with different jobs.
+
+`test_parley.py` — 29 regression tests, each corresponding to a defect found in
+review, so a failure means a guarantee stated above has stopped being true:
+sandbox pinning on both fresh and resumed turns, transcript-id collision
+resistance, answer preservation when cleanup or reading fails, the non-zero-exit
+policy, failure recording, viewer path traversal, and console encoding.
+
+`test_contract.py` — 36 characterization tests pinning the *shape* of the
+interface: the CLI surface, prompt construction order, exact transcript and
+registry schemas, session scoping, and the exact Codex argv. These describe what
+Parley does today rather than what it ought to do, so a failure is a
+compatibility break to justify, not a test to relax.
 
 ## Output encoding
 

@@ -797,7 +797,7 @@ Status: accepted.
 - Smallest sufficient change: add `models.py`, `runners.py`, and `codex_runner.py`; keep `parley.py` behavior-compatible through wrappers.
 - Shippable state: consultation works exactly as before through the new internal boundary.
 - New user capability: none.
-- Acceptance: all 59 tests pass; exact argv, stdin, output, sessions, partial results, timeouts, and errors remain unchanged; only `read_only` is admitted.
+- Acceptance: the entire pre-existing suite — 65 tests at the start of PARLEY-V2-002 — plus all new runner-contract tests passes.
 - Kill: any characterized external change or Codex-specific leakage into the generic contract.
 - Promotion: legacy main path uses the runner contract with no observable regression.
 - Out of scope: new CLI, provider selection, v2 records, and writes.
