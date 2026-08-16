@@ -9,12 +9,14 @@ Codex-specific detail leaks into the generic contract.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import parley
 from parley_core import codex_runner, runners
 from parley_core.models import (
     AccessPolicy,
@@ -66,17 +68,23 @@ class CapabilityAdmission(unittest.TestCase):
         with self.assertRaises(runners.CapabilityError):
             runners.admit(runners.resolve_spec(), AccessPolicy.WORKSPACE_WRITE)
 
-    def test_a_forged_capability_object_is_not_trusted_by_resolve(self):
-        """A spec can be constructed by hand, but resolve_spec never honours it."""
-        forged = RunnerSpec(
-            "codex",
-            "openai",
-            None,
-            RunnerCapabilities(
-                persistent_sessions=True, read_only=True, workspace_write=True
-            ),
-        )
-        self.assertTrue(forged.capabilities.workspace_write)
+    def test_a_forged_capability_object_is_refused_by_admit_under_both_policies(self):
+        """A RunnerSpec is a value object; admission must not trust its claims.
+
+        resolve_spec() refusing to PRODUCE a forged spec was never sufficient --
+        anyone can construct one. admit() re-derives from the code declaration,
+        so a forged spec is refused outright, under either policy.
+        """
+        forged = FORGED_WRITE_SPEC
+        self.assertTrue(forged.capabilities.workspace_write)  # it does claim it
+        for policy in (AccessPolicy.WORKSPACE_WRITE, AccessPolicy.READ_ONLY):
+            with (
+                self.subTest(policy=policy),
+                self.assertRaises(runners.CapabilityError),
+            ):
+                runners.admit(forged, policy)
+
+    def test_resolve_never_produces_a_write_capable_spec(self):
         self.assertFalse(runners.resolve_spec().capabilities.workspace_write)
 
 
@@ -156,6 +164,94 @@ class PolicyReachesArgv(unittest.TestCase):
             "codex", Path("/p"), None, None, Path("o.md"), AccessPolicy.WORKSPACE_WRITE
         )
         self.assertEqual(argv[argv.index("-s") + 1], "workspace-write")
+
+
+class ExecutionOutcomes(unittest.TestCase):
+    """Every declared RunStatus must be reachable through the real runner path.
+
+    Constructing a RunResult by hand cannot detect a branch that still raises,
+    which is exactly how an unreachable status survived review once already.
+    """
+
+    def runner(self, timeout=900):
+        return codex_runner.CodexRunner(
+            runners.resolve_spec(), binary="codex", timeout=timeout
+        )
+
+    def test_timeout_returns_timed_out(self):
+        with mock.patch.object(
+            codex_runner.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd="codex", timeout=1),
+        ):
+            r = self.runner(timeout=1).run(
+                "p", Path.cwd(), "sess-in", AccessPolicy.READ_ONLY
+            )
+        self.assertIs(r.status, RunStatus.TIMED_OUT)
+        self.assertEqual(r.answer, "")
+        self.assertEqual(r.session, "sess-in")
+        self.assertIsNone(r.metadata.exit_code)
+        self.assertIn("timed out after 1s", r.metadata.diagnostic)
+        self.assertFalse(r.usable)
+
+    def test_nonzero_without_answer_returns_failed(self):
+        proc = subprocess.CompletedProcess([], 2, stdout="", stderr="Error: boom")
+        with (
+            mock.patch.object(codex_runner.subprocess, "run", return_value=proc),
+            mock.patch.object(Path, "is_file", return_value=False),
+            mock.patch.object(Path, "unlink"),
+        ):
+            r = self.runner().run("p", Path.cwd(), "sess-in", AccessPolicy.READ_ONLY)
+        self.assertIs(r.status, RunStatus.FAILED)
+        self.assertEqual(r.answer, "")
+        self.assertEqual(r.session, "sess-in")
+        self.assertEqual(r.metadata.exit_code, 2)
+        self.assertIn("codex exited 2", r.metadata.diagnostic)
+        self.assertIn("boom", r.metadata.diagnostic)
+        self.assertFalse(r.usable)
+
+    def test_launch_failure_still_raises_runner_error(self):
+        with (
+            mock.patch.object(
+                codex_runner.subprocess, "run", side_effect=FileNotFoundError()
+            ),
+            self.assertRaises(runners.RunnerError),
+        ):
+            self.runner().run("p", Path.cwd(), None, AccessPolicy.READ_ONLY)
+
+
+class LegacyWrapperTranslation(unittest.TestCase):
+    """run_codex() must turn unusable results back into the legacy SystemExit."""
+
+    def test_timeout_becomes_systemexit_with_the_legacy_text(self):
+        with (
+            mock.patch.object(parley, "codex_bin", return_value="codex"),
+            mock.patch.object(
+                codex_runner.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(cmd="codex", timeout=7),
+            ),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            parley.run_codex("p", Path.cwd(), None, None, 7)
+        self.assertIn("codex timed out after 7s", str(ctx.exception))
+        self.assertIn("--timeout", str(ctx.exception))
+
+    def test_failure_becomes_systemexit_with_exit_code_and_hint(self):
+        proc = subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="Error: not logged in"
+        )
+        with (
+            mock.patch.object(parley, "codex_bin", return_value="codex"),
+            mock.patch.object(codex_runner.subprocess, "run", return_value=proc),
+            mock.patch.object(Path, "is_file", return_value=False),
+            mock.patch.object(Path, "unlink"),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            parley.run_codex("p", Path.cwd(), None, None, 10)
+        msg = str(ctx.exception)
+        self.assertIn("codex exited 1", msg)
+        self.assertIn("codex login", msg)  # the hint survives the translation
 
 
 if __name__ == "__main__":

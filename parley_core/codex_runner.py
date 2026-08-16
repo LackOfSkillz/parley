@@ -236,8 +236,21 @@ class CodexRunner:
                     ),
                 )
             err = (proc.stderr or proc.stdout or "").strip()[:700]
-            raise RunnerError(
-                f"codex exited {proc.returncode}: {err}{classify_failure(err, session)}"
+            # An expected outcome: the process ran and reported failure. Structured
+            # result, not an exception -- RunnerError is reserved for launch
+            # failure, unreadable retained output, and infrastructure faults.
+            return RunResult(
+                answer="",
+                session=found or session,
+                status=RunStatus.FAILED,
+                metadata=RunMetadata(
+                    exit_code=proc.returncode,
+                    duration_ms=elapsed,
+                    diagnostic=(
+                        f"codex exited {proc.returncode}: {err}"
+                        f"{classify_failure(err, session)}"
+                    ),
+                ),
             )
 
         return RunResult(
