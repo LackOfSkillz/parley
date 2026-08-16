@@ -1,0 +1,11 @@
+# Conversation state and transcripts. These contain repository context that was
+# sent to OpenAI; keep them local unless you have deliberately reviewed them.
+threads.json
+log/
+!log/.gitkeep
+
+# Playwright MCP scratch output
+.playwright-mcp/
+
+__pycache__/
+*.pyc
