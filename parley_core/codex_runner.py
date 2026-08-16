@@ -251,7 +251,10 @@ class CodexRunner:
                     metadata=RunMetadata(
                         exit_code=proc.returncode,
                         duration_ms=elapsed,
-                        diagnostic=f"codex exited {proc.returncode}: {err}",
+                        diagnostic=(
+                            f"codex exited {proc.returncode}: {err}"
+                            f"{classify_failure(err, session)}"
+                        ),
                         limit=limit,
                     ),
                 )

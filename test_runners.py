@@ -329,5 +329,38 @@ class LimitedOutcomeThroughRunner(unittest.TestCase):
         self.assertEqual(r.answer, "THE ANSWER")
 
 
+class LimitDoesNotLoseTheLegacyHint(unittest.TestCase):
+    """Consultation's operator-facing text must not change on the LIMITED path.
+
+    A limit-shaped JSON failure previously dropped classify_failure()'s guidance,
+    so the user lost the "Plan allowance" hint precisely when it mattered most.
+    """
+
+    def test_legacy_wrapper_still_emits_the_plan_allowance_hint(self):
+        import json as _json
+
+        payload = _json.dumps(
+            {
+                "status": 429,
+                "error": {"type": "rate_limit_error", "message": "rate limit"},
+            }
+        )
+        stdout = _json.dumps({"type": "turn.failed", "error": {"message": payload}})
+        proc = subprocess.CompletedProcess(
+            [], 1, stdout=stdout, stderr="rate limit hit"
+        )
+        with (
+            mock.patch.object(parley, "codex_bin", return_value="codex"),
+            mock.patch.object(codex_runner.subprocess, "run", return_value=proc),
+            mock.patch.object(Path, "is_file", return_value=False),
+            mock.patch.object(Path, "unlink"),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            parley.run_codex("p", Path.cwd(), None, None, 10)
+        msg = str(ctx.exception)
+        self.assertIn("codex exited 1", msg)
+        self.assertIn("Plan allowance", msg)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

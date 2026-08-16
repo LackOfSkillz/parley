@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from parley_core.limits import (
     DETECTOR_VERSION,
     LimitInfo,
+    WaitRefused,
     classify,
     is_blind,
     wait_seconds,
@@ -198,27 +199,39 @@ class StderrHeuristicIsVersionPinned(unittest.TestCase):
 
 
 class WaitBounds(unittest.TestCase):
-    """Calculation only. Nothing here sleeps."""
+    """Calculation only. Nothing here sleeps.
+
+    The bounds are the ones §11 fixes: 300s blind base, multiplier 3, 7200s
+    per-wait cap, and a 5-second safety margin on provider time.
+    """
 
     def info(self, retry=None):
         return LimitInfo("rate", "r", "json", retry, None, DETECTOR_VERSION)
 
-    def test_provider_retry_after_is_preferred(self):
-        self.assertEqual(wait_seconds(self.info(300), attempt=1), 300)
+    def test_provider_time_gains_the_safety_margin(self):
+        self.assertEqual(wait_seconds(self.info(300), attempt=1), 305)
 
-    def test_provider_value_is_still_clamped(self):
-        self.assertEqual(
-            wait_seconds(self.info(999999), attempt=1, max_single_wait=3600), 3600
-        )
+    def test_provider_time_above_the_cap_is_refused_not_shortened(self):
+        """Retrying early is not a smaller wait, it is a wasted call."""
+        with self.assertRaises(WaitRefused):
+            wait_seconds(self.info(99999), attempt=1)
 
-    def test_blind_backoff_grows_then_clamps(self):
+    def test_provider_time_above_remaining_budget_is_refused(self):
+        with self.assertRaises(WaitRefused):
+            wait_seconds(self.info(600), attempt=1, remaining_budget=100)
+
+    def test_blind_backoff_follows_the_specified_progression(self):
         i = self.info()
-        self.assertEqual(wait_seconds(i, 1, base_backoff=60), 60)
-        self.assertEqual(wait_seconds(i, 2, base_backoff=60), 120)
-        self.assertEqual(wait_seconds(i, 3, base_backoff=60), 240)
-        self.assertEqual(
-            wait_seconds(i, 99, base_backoff=60, max_single_wait=3600), 3600
-        )
+        # 5, 15, 45, 120, 120 minutes
+        self.assertEqual(wait_seconds(i, 1), 300)
+        self.assertEqual(wait_seconds(i, 2), 900)
+        self.assertEqual(wait_seconds(i, 3), 2700)
+        self.assertEqual(wait_seconds(i, 4), 7200)
+        self.assertEqual(wait_seconds(i, 9), 7200)
+
+    def test_blind_backoff_over_budget_is_refused(self):
+        with self.assertRaises(WaitRefused):
+            wait_seconds(self.info(), attempt=1, remaining_budget=60)
 
     def test_limit_info_is_json_safe(self):
         json.dumps(self.info(60).to_json())

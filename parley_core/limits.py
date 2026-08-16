@@ -142,24 +142,56 @@ def classify(
     return None
 
 
+class WaitRefused(Exception):
+    """A provider-directed delay exceeds a configured bound.
+
+    Parley refuses rather than shortening it: retrying before the provider says
+    the limit clears is not a smaller wait, it is a wasted call that re-fails.
+    """
+
+
+# Exactly the §11 bounds. Named here rather than inlined so a drift is visible.
+BLIND_BASE = 300  # 5 minutes
+BLIND_MULTIPLIER = 3
+MAX_ONE_WAIT = 7200  # 2 hours
+SAFETY_MARGIN = 5  # added to any provider-supplied time
+
+
 def wait_seconds(
     info: LimitInfo,
     attempt: int,
     *,
-    max_single_wait: int = 3600,
-    base_backoff: int = 60,
+    max_one_wait: int = MAX_ONE_WAIT,
+    remaining_budget: int | None = None,
+    base: int = BLIND_BASE,
+    multiplier: int = BLIND_MULTIPLIER,
 ) -> int:
-    """How long a caller MAY wait, bounded. This function does not sleep.
+    """How long a caller MAY wait. Calculation only -- this never sleeps.
 
-    A provider-supplied retry-after is trusted over guesswork, but is still
-    clamped: a malformed or hostile value must not translate into an unbounded
-    unattended sleep.
+    A provider-directed delay wins over guesswork and gains a safety margin, but
+    if it exceeds the per-wait cap or the remaining budget the wait is REFUSED,
+    not truncated.
     """
-    if info.retry_after_seconds and info.retry_after_seconds > 0:
-        return min(info.retry_after_seconds, max_single_wait)
-    # Blind exponential backoff. Explicitly a guess -- the caller must surface
-    # that this wait is not provider-directed.
-    return min(base_backoff * (2 ** max(0, attempt - 1)), max_single_wait)
+    provider = info.retry_after_seconds
+    if provider and provider > 0:
+        delay = provider + SAFETY_MARGIN
+        if delay > max_one_wait:
+            raise WaitRefused(
+                f"provider asks for {delay}s, above the {max_one_wait}s per-wait cap"
+            )
+        if remaining_budget is not None and delay > remaining_budget:
+            raise WaitRefused(
+                f"provider asks for {delay}s, above the {remaining_budget}s remaining budget"
+            )
+        return delay
+
+    # Blind backoff: 5, 15, 45, 120, 120 ... minutes, clamped.
+    delay = min(base * (multiplier ** max(0, attempt - 1)), max_one_wait)
+    if remaining_budget is not None and delay > remaining_budget:
+        raise WaitRefused(
+            f"blind backoff of {delay}s exceeds the {remaining_budget}s remaining budget"
+        )
+    return delay
 
 
 def is_blind(info: LimitInfo) -> bool:
