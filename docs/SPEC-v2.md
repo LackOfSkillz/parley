@@ -1,17 +1,17 @@
 # Parley v2 — Engineering Spec and Stage Plan
 
-> Status: **APPROVED.** The three open judgement calls were ruled on by the owner
-> and the affected sections amended in Addendum B, which takes precedence over the
-> corresponding text above.
-> Co-authored by Claude Code and GPT (via Codex) over the `v2` thread in this repo.
-> The transcript of that discussion is in `log/` and is the provenance for every
-> decision below.
+> Status: **APPROVED** by the owner. Single normative source of truth for v2.
+> Co-authored by Claude Code and GPT (via Codex) in the `v2` thread of this repo;
+> the transcript in `log/` is the provenance for every decision here.
+>
+> Owner rulings, applied in place throughout:
+> - Writable runs refuse **modified tracked** files but **tolerate untracked** ones.
+> - Worktree root is **`D:\ParleyWorktrees`**.
+> - Claude Code support stays **last and conditional**, and may never ship.
 
----
-
-# Parley v2 Engineering Specification and Stage Plan
-
-Status: proposed for owner approval. Normative terms such as “must” describe implementation requirements. Any marked judgment call must be raised rather than guessed during implementation.
+Normative terms such as “must” describe implementation requirements. Any
+remaining marked judgment call must be raised rather than guessed during
+implementation.
 
 ## 1. Module layout
 
@@ -75,8 +75,12 @@ threads.json                    v1 compatibility registry
 registry-v2.json                authoritative v2 registry
 log/<conversation-id>.jsonl     append-only transcripts
 runs/<run-id>/controls/*.json   atomic external control inbox
-<project-parent>/.parley-worktrees/<project>-<run-id>/
-                                retained run worktree
+
+D:\ParleyWorktrees\<project-name>-<run-id>\
+                                default retained run worktree on Windows
+
+<--worktree-root>\<project-name>-<run-id>\
+                                retained run worktree when explicitly overridden
 ```
 
 No source-size cap is imposed. The ownership boundaries above are the control against another god file.
@@ -193,26 +197,63 @@ Participant rules:
 
 V2 has no patch-only or read-only maker mode. An orchestrated run is writable and therefore requires `--allow-write` on every new `run` invocation.
 
-Before creating or launching a writable run, Parley must verify:
+Replace the numbered preflight list with:
 
-1. `--allow-write` is present.
-2. The project resolves to an existing Git worktree.
-3. `HEAD` resolves to a commit.
-4. The source worktree has no staged, unstaged, or untracked non-ignored changes.
-5. The maker runner supports `persistent_sessions` and `workspace_write`.
-6. The reviewer runner supports `persistent_sessions` and `read_only`.
-7. The worktree target resolves outside the source project.
-8. The target does not already exist.
-9. `git worktree add --detach <target> <source-commit>` succeeds.
-10. The created worktree’s reported top level equals the intended target.
-11. Both participants will receive that exact target as `cwd`.
-12. Run metadata and recovery location are durable before the first maker launch.
+> Before creating or launching a writable run, Parley must verify:
+>
+> 1. `--allow-write` is present.
+> 2. The project resolves to an existing Git worktree.
+> 3. `HEAD` resolves to a commit.
+> 4. No tracked file has staged or unstaged changes, including tracked deletions, renames, type changes, conflict entries, or dirty tracked submodules. Untracked files do not fail admission.
+> 5. All non-ignored untracked paths are enumerated before worktree creation. If any exist, Parley warns on stderr and appends a `source.untracked` transcript event before the first model invocation.
+> 6. The maker runner supports `persistent_sessions` and `workspace_write`.
+> 7. The reviewer runner supports `persistent_sessions` and `read_only`.
+> 8. The configured worktree root is absolute; exists or can be created; resolves to a writable, available local filesystem; and remains outside the canonical source project after symlink/junction resolution.
+> 9. The target is a direct child of the resolved worktree root, does not exist, is not registered as another Git worktree, and remains outside the canonical source project after resolving its existing parent.
+> 10. On Windows, every target component fits the destination filesystem’s component limit. Parley computes the longest resulting committed checkout path. If it reaches the traditional 260-character boundary and Git `core.longpaths` is not enabled, admission refuses. If `core.longpaths` is enabled, admission may proceed but emits a warning because downstream tools may still lack long-path support.
+> 11. `git worktree add --detach --lock --no-relative-paths <target> <source-commit>` succeeds.
+> 12. After creation, `git worktree list --porcelain -z` reports the intended target and source commit; `git rev-parse --show-toplevel` from the new worktree equals the intended target; and `git status --porcelain` succeeds.
+> 13. Both participants will receive that exact target as `cwd`.
+> 14. Run metadata, source warnings, and recovery location are durable before the first maker launch.
 
-Default target:
+Implementation tests for precondition 4 must use:
 
 ```text
-<project-parent>/.parley-worktrees/<project-name>-<run-id>
+git diff --quiet --ignore-submodules=none --
+git diff --cached --quiet --ignore-submodules=none HEAD --
 ```
+
+Exit code 0 means clean, 1 means tracked changes, and any other exit is an admission error. Untracked discovery must use the NUL-delimited equivalent of:
+
+```text
+git ls-files --others --exclude-standard -z
+```
+
+Ignored files are not enumerated. They were already outside the prior clean-tree rule and remain a known environment-parity blind spot.
+
+
+Replace the existing default-target paragraph with:
+
+> The code-defined default worktree root on Windows is:
+>
+> ```text
+> D:\ParleyWorktrees
+> ```
+>
+> The default target is:
+>
+> ```text
+> D:\ParleyWorktrees\<project-name>-<run-id>
+> ```
+>
+> `--worktree-root ABSOLUTE_DIR` may override the root for one new run. There is no environment-variable override in v2. The resolved root is persisted in `run.created` and cannot change during the run.
+>
+> Parley creates the root when absent, then resolves and validates it before deriving the target. The target name is generated from a sanitized project slug and Parley-generated run ID; user-controlled path separators and `..` are forbidden.
+>
+> A different drive is supported because Git worktrees accept absolute paths. Parley explicitly uses `--no-relative-paths` so a repository-level `worktree.useRelativePaths` setting cannot produce invalid cross-volume linkage. The worktree is created with `--lock` because v2 retains it for manual disposition.
+>
+> The linked worktree still shares Git administrative data and object storage with the source repository. Moving the checkout to D: provides capacity and change isolation; it does not create repository-metadata or security isolation.
+
 
 The source commit and worktree path are immutable for the run.
 
@@ -225,12 +266,22 @@ Parley must never:
 - Merge, push, cherry-pick, promote, delete, or automatically clean the worktree.
 - Treat runner capability declarations from CLI input or registry data as trusted.
 
-Assumptions:
+Replace the clean-tree assumption with:
 
-- Codex can demonstrably enforce both required policies with the worktree as its workspace. Falsified by a controlled boundary probe; if falsified, writable orchestration is killed while consultation remains shippable.
-- Requiring a clean source tree is acceptable. Falsified by an owner requirement to orchestrate over uncommitted state; supporting that would require a separately approved snapshot design.
+> Assumption: refusing tracked staged or unstaged changes prevents the source-fidelity failure this gate is intended to prevent, because the run is constructed from committed HEAD. Falsified by a demonstrated tracked working-tree change that is absent from HEAD but not detected by the two explicit diff checks.
+>
+> Assumption: tolerating untracked files is safe for source preservation because they were never part of the source commit. Falsified by evidence that worktree creation copies or mutates an untracked source path.
+>
+> Assumption: warning about non-ignored untracked paths provides adequate visibility into environment differences. Falsified if a supported workflow materially depends on ignored or untracked local files and requires them to be copied into the run. Copying such files requires a separate approved snapshot design.
+>
+> Assumption: `D:\ParleyWorktrees` is an available fixed local volume with adequate capacity on the owner’s host. Falsified by runtime volume, writability, availability, or checkout validation.
+>
+> Assumption: explicit absolute linkage and post-create validation are sufficient for cross-drive worktrees. Falsified if controlled PARLEY-V2-006 tests show invalid Git administration links, checkout failures, or incorrect top-level resolution.
 
-Judgment call: alternate worktree roots, dirty-tree snapshots, and network isolation are not settled by this spec. Raise them rather than adding flags.
+
+Settled by owner ruling: untracked files are tolerated, the worktree root is
+`D:\ParleyWorktrees`, and there is no network isolation. Dirty-tree snapshotting
+remains out of scope and requires its own design.
 
 ## 4. Transcript schema v2
 
@@ -698,20 +749,30 @@ V2 does not provide:
 - Remote control, authentication, LAN binding, scheduling, or multi-host operation.
 - Automatic secret scanning or transcript encryption.
 
-The product claim is limited to:
+Replace the final product-claim passage with:
 
-> Any model addressable through a configured, supported runner and compatible with the participant’s required capabilities.
+> The guaranteed Parley v2 runner is Codex. Its supported provider surface is OpenAI frontier models addressable through Codex and compatible local models addressable through Codex’s Ollama or LM Studio provider routes.
+>
+> The product claim is:
+>
+> > Parley supports models addressable through its configured Codex runner and compatible with the participant’s required capabilities.
+>
+> Parley does not claim support for every local model, every frontier model, or Claude Code. PARLEY-V2-009 is an evidence-only Claude Code feasibility probe. PARLEY-V2-010 exists only if that probe earns promotion. Claude Code support is not a v2 completion criterion and may never ship.
 
-Assumption: this narrower claim satisfies the owner better than unverifiable universality. Falsified by an explicit requirement to support a named model/provider not addressable through the approved runners.
 
 Judgment call: any requested item above requires its own design and dispatch.
 
 ## 10. Stage plan
 
-Revised execution order:
+
+Execution order:
 
 ```text
-001 → 002 → 004 → 003 → 005 → 006 → 007 → 008 → 009 → 010
+001 → 001A → 002 → 002L → 004 → 003 → 005 → 006 → 007 → 008 → 009 → 010
+```
+
+001 and 001A are complete.
+@1 → 001A → 002 → 002L → 004 → 003 → 005 → 006 → 007 → 008 → 009 → 010
 ```
 
 The only ordering change is moving PARLEY-V2-004 before PARLEY-V2-003. Characterization established that the v1 transcript and registry shapes are compatibility boundaries. The v2 storage codec and dual-read viewer should therefore exist before the new explicit consultation command begins emitting v2 records. Shipping `consult` first would create a transient new interface whose on-disk format changes immediately afterward.
@@ -728,6 +789,23 @@ Status: accepted.
 - Kill condition: any production change or normalization of ambiguous behavior.
 - Out of scope: all v2 runtime behavior.
 
+### PARLEY-V2-001A — Preserve completed answers across console encodings
+
+- Spec coverage: section 12.
+- Principal objective: a console code page must not withhold a completed answer.
+- Smallest sufficient change: `use_utf8_console()` reconfiguring stdout and stderr to
+  UTF-8 with replacement, called from `main()`, tolerating streams that lack or refuse
+  reconfiguration.
+- Shippable state: consultation unchanged and more robust.
+- New user capability: answers containing non-latin-1 characters are delivered.
+- Acceptance criteria: the helper reconfigures both streams; unreconfigurable streams are
+  tolerated; an integration test proves `main()` itself delivers U+2192 through a fake
+  legacy stream; a guard test proves that fake genuinely fails unreconfigured.
+- Kill criteria: any change to transcript, registry, argv, or failure semantics.
+- Promotion criteria: full suite green under both discovery and direct file execution.
+- Status: **COMPLETE.**
+
+
 ### PARLEY-V2-002 — Put Codex behind the runner contract
 
 - Spec coverage: sections 1 and 2.
@@ -741,6 +819,23 @@ Status: accepted.
 - Out of scope: new CLI, provider selection, v2 records, and writes.
 - Assumption: current behavior fits the contract. Falsified by a compatibility test that cannot pass without special-case semantics.
 
+### PARLEY-V2-002L — Characterize and classify recoverable runner limits
+
+- Spec coverage: section 11.
+- Principal objective: establish a reliable runner-level `limited` outcome from captured
+  Codex evidence.
+- Smallest sufficient change: capture version-authentic limit fixtures; add `limited` and
+  `LimitInfo` to the runner contract; implement classification and bounded wait-policy
+  calculation. No sleep loop and no public flag yet.
+- Shippable state: consultation unchanged; the classifier exists but nothing waits.
+- New user capability: none yet.
+- Acceptance criteria: rate and plan fixtures classify as `limited`; authentication,
+  expired-session, malformed-command, timeout, network and arbitrary non-zero fixtures do
+  not; reset/retry-after parsing tested where present; blind backoff explicitly marked
+  heuristic.
+- Kill criteria: no reliable discriminator exists; classification degenerates to generic
+  non-zero retry; detection depends on unversioned prose with no fixture.
+- Promotion criteria: evidence-backed classifier with false-positive cases covered.
 ### PARLEY-V2-004 — Add the v2 storage compatibility layer
 
 - Spec coverage: sections 4 and 5, plus viewer portions of section 1.
@@ -782,16 +877,36 @@ Status: accepted.
 
 ### PARLEY-V2-006 — Enforce worktree and writable-run admission
 
-- Spec coverage: sections 3 and 8 preflight.
-- Principal objective: prove that writable execution is admitted only inside a dedicated worktree through a capable runner.
-- Smallest sufficient change: `worktrees.py`, capability gates, recovery metadata, and real temporary-Git tests; no public run command.
-- Shippable state: all consultation remains usable; internal worktree preparation is tested but not user-exposed.
+- Spec coverage: sections 3, 4, 7, and state persistence from section 8.
+- Principal objective: prove that writable execution is admitted only inside a validated dedicated worktree through capable runners.
+- Smallest sufficient change: `worktrees.py`, tracked-change detection, untracked-source warnings, configurable absolute worktree root, cross-drive creation, capability gates, recovery metadata, and temporary-repository tests. No public orchestration loop.
+- Shippable state: consultation remains usable; internal worktree preparation is complete and tested but is not yet user-exposed.
 - New user capability: none.
-- Acceptance: every preflight rule in section 3 passes; source checkout remains unchanged; interrupted setup is recoverable.
-- Kill: Codex cannot enforce workspace-write, target resolution can reach the source tree, or cleanup can discard work.
-- Promotion: controlled boundary tests demonstrate maker/reviewer policies and retained isolation.
-- Out of scope: loop, promotion, cleanup, and security claims about Git.
-- Assumption: Codex supplies the required enforcement. Falsified by the boundary probe.
+- Acceptance criteria:
+  - Staged or unstaged changes to tracked files refuse admission.
+  - Tracked deletions, renames, conflicts, type changes, and dirty tracked submodules refuse admission.
+  - Non-ignored untracked files do not refuse admission.
+  - Every such untracked path appears in stderr and one exact `source.untracked` event.
+  - Ignored paths are neither copied nor represented as enumerated.
+  - The default root resolves to `D:\ParleyWorktrees` on Windows.
+  - An absolute `--worktree-root` equivalent overrides it for one test run.
+  - Relative roots, nonexistent unavailable volumes, unwritable roots, traversal targets, existing targets, registered targets, and targets resolving inside the source project refuse before model launch.
+  - Cross-drive creation uses detached, locked, absolute worktree linkage.
+  - Windows long-path risk is refused or warned according to the amended admission rule.
+  - Post-create Git validation confirms the exact target and source commit.
+  - The source checkout remains unchanged.
+  - Interrupted or failed setup leaves either no linked worktree or an explicitly recorded recoverable one.
+- Kill criteria:
+  - A tracked modification can be silently excluded.
+  - An untracked path is copied without an approved snapshot rule.
+  - Target resolution can escape the configured root or enter the source project.
+  - Cross-drive linkage is relative, invalid, or unvalidated.
+  - Codex cannot enforce workspace-write at the resulting D: worktree.
+  - Cleanup can discard run work.
+- Promotion criteria: controlled tests demonstrate tracked-change refusal, untracked-warning admission, cross-drive creation, path validation, correct runner policies, and retained recovery without modifying the source checkout.
+- Deliberately out of scope: copying untracked or ignored files, dirty-tree snapshots, automatic cleanup, merge/push/promotion, arbitrary environment-variable configuration, and security claims based on the D: location.
+- Assumptions and falsifiers: the amended §3 assumptions apply.
+
 
 ### PARLEY-V2-007 — Implement the bounded state machine
 
@@ -849,28 +964,7 @@ Approval of this document authorizes the architecture and stage boundaries, not 
 
 ---
 
-# Addendum A — Console encoding, and surviving plan limits
-
-## (A) UTF-8 console correction
-
-Yes: formalize it as **PARLEY-V2-001A — Preserve completed answers across console encodings**, and land it before PARLEY-V2-002.
-
-Verified:
-
-- `use_utf8_console()` configures both streams as UTF-8 with replacement and tolerates unsupported streams. [parley.py](C:/Dev/parley/parley.py:108)
-- It runs before registry access and normal output, although technically after argument parsing. [parley.py](C:/Dev/parley/parley.py:389)
-- The answer is still logged and the registry written before `print(answer)`. [parley.py](C:/Dev/parley/parley.py:466)
-- The three new tests exercise the helper directly. [test_parley.py](C:/Dev/parley/test_parley.py:289)
-
-The corrective dispatch should add one integration test proving `main()` delivers a non-cp1252 answer through a simulated legacy stream. The current tests prove the helper, but not that the real output path invokes it before answer delivery.
-
-Add this explicit, qualified guarantee to the spec:
-
-> Parley configures standard output and error as UTF-8 with replacement when the host streams support reconfiguration. A console encoding mismatch must not prevent delivery of a completed answer. Transcript and registry state are persisted before answer printing. If a host-supplied stream refuses reconfiguration, Parley preserves the durable record but cannot guarantee that stream’s behavior.
-
-Do not claim that the result was “destroyed”; it remained durable but was not delivered to the caller.
-
-## (B) Spec addition: Limit-wait survival
+## 11. Surviving provider usage limits
 
 ### Scope and terminology
 
@@ -1152,275 +1246,12 @@ Limit handling may never:
 - Rewrite an earlier attempt record.
 - Convert exhaustion into approval, revision, or promotion.
 
-### Dispatch placement
-
-This earns its own bounded dispatch:
-
-**PARLEY-V2-002L — Characterize and classify recoverable runner limits**
-
-Execute it after PARLEY-V2-002 and before PARLEY-V2-004.
-
-Principal objective: establish a reliable runner-level `limited` outcome from captured Codex evidence.
-
-Smallest sufficient change:
-
-- Capture actual or version-authentic limit fixtures.
-- Add `limited` and `LimitInfo` to the runner contract.
-- Implement classification and bounded wait-policy calculations without an orchestration sleep loop.
-- Add no public flag yet.
-
-Acceptance criteria:
-
-- Rate/plan fixtures classify as `limited`.
-- Authentication, expired-session, malformed-command, timeout, network, and arbitrary non-zero fixtures do not.
-- Reset/retry-after parsing is tested when present.
-- Blind backoff is explicitly marked heuristic.
-- All compatibility tests pass.
-
-Kill criteria:
-
-- No reliable discriminator exists.
-- Classification requires generic non-zero retry.
-- Detection depends on unversioned prose with no fixture.
-- Existing consultation failure semantics change.
-
-Promotion criteria:
-
-- The classifier is evidence-backed and false-positive cases are covered.
-- The runner contract can carry the outcome without weakening existing behavior.
-
-The remaining implementation maps into existing stages:
-
-- PARLEY-V2-004 adds the transcript kinds and viewer normalization.
-- PARLEY-V2-007 adds `WAITING_LIMIT`, retry attempts, bounds, and stop polling.
-- PARLEY-V2-008 exposes `--wait-on-limit` and its bounds.
-
-Revised execution order:
-
-```text
-001 → 001A → 002 → 002L → 004 → 003 → 005 → 006 → 007 → 008 → 009 → 010
-```
-
-The OpenAI documentation skill materially affected this design: official documentation does not establish a stable non-interactive limit protocol, so the spec requires captured evidence and labels stderr-based detection as heuristic rather than presenting it as guaranteed.
-
-
 ---
 
-# Addendum B — Owner rulings, and the amended sections
+## 12. Output encoding
 
-The owner ruled on the three open judgement calls. Where this addendum restates a
-section, it **supersedes** the earlier text.
-
-- **Clean tree:** refuse on modifications to *tracked* files; tolerate untracked.
-- **Worktree root:** `D:\ParleyWorktrees` (C: has 38 GB free; D: has 1,858 GB).
-- **Claude Code:** stays last, conditional, and may never ship.
-
-Decision 1 preserves the original protection against silently omitting uncommitted changes to tracked content. It loses only an environment-parity guarantee: untracked files remain outside the HEAD-based run and may matter to builds or tooling. That difference should be visible in both stderr and the transcript.
-
-Decision 2 is sound. Git supports absolute worktree paths and defaults to absolute links; Parley should explicitly pass `--no-relative-paths` so repository configuration cannot select cross-drive-invalid relative linkage. `--lock` should also be used to prevent pruning of the retained worktree metadata. [Git worktree documentation](https://git-scm.com/docs/git-worktree.html)
-
-On Windows, path readiness is not established merely by enabling the OS long-path setting: applications must also opt in, and Git for Windows separately uses `core.longpaths`. Admission should therefore preflight committed path lengths and validate the completed checkout rather than assuming D: solves path length. [Microsoft path-length documentation](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation), [Git for Windows long-path documentation](https://gitforwindows.org/git-cannot-create-a-file-or-directory-with-a-long-path.html)
-
-I could not independently inspect D: under this review sandbox. Its capacity and fixed-volume status remain owner-supplied facts that PARLEY-V2-006 must verify operationally.
-
-Use the following replacement text.
-
-## Replacement for §1 runtime-state layout
-
-Replace the existing runtime-state block with:
-
-```text
-threads.json                    v1 compatibility registry
-registry-v2.json                authoritative v2 registry
-log/<conversation-id>.jsonl     append-only transcripts
-runs/<run-id>/controls/*.json   atomic external control inbox
-
-D:\ParleyWorktrees\<project-name>-<run-id>\
-                                default retained run worktree on Windows
-
-<--worktree-root>\<project-name>-<run-id>\
-                                retained run worktree when explicitly overridden
-```
-
-`D:\ParleyWorktrees` is a code-defined default, not an environment-variable default. On a host where that path is not an absolute usable path, `run` requires an explicit `--worktree-root`.
-
-## Replacement for §3 admission preconditions
-
-Replace the numbered preflight list with:
-
-> Before creating or launching a writable run, Parley must verify:
->
-> 1. `--allow-write` is present.
-> 2. The project resolves to an existing Git worktree.
-> 3. `HEAD` resolves to a commit.
-> 4. No tracked file has staged or unstaged changes, including tracked deletions, renames, type changes, conflict entries, or dirty tracked submodules. Untracked files do not fail admission.
-> 5. All non-ignored untracked paths are enumerated before worktree creation. If any exist, Parley warns on stderr and appends a `source.untracked` transcript event before the first model invocation.
-> 6. The maker runner supports `persistent_sessions` and `workspace_write`.
-> 7. The reviewer runner supports `persistent_sessions` and `read_only`.
-> 8. The configured worktree root is absolute; exists or can be created; resolves to a writable, available local filesystem; and remains outside the canonical source project after symlink/junction resolution.
-> 9. The target is a direct child of the resolved worktree root, does not exist, is not registered as another Git worktree, and remains outside the canonical source project after resolving its existing parent.
-> 10. On Windows, every target component fits the destination filesystem’s component limit. Parley computes the longest resulting committed checkout path. If it reaches the traditional 260-character boundary and Git `core.longpaths` is not enabled, admission refuses. If `core.longpaths` is enabled, admission may proceed but emits a warning because downstream tools may still lack long-path support.
-> 11. `git worktree add --detach --lock --no-relative-paths <target> <source-commit>` succeeds.
-> 12. After creation, `git worktree list --porcelain -z` reports the intended target and source commit; `git rev-parse --show-toplevel` from the new worktree equals the intended target; and `git status --porcelain` succeeds.
-> 13. Both participants will receive that exact target as `cwd`.
-> 14. Run metadata, source warnings, and recovery location are durable before the first maker launch.
-
-Implementation tests for precondition 4 must use:
-
-```text
-git diff --quiet --ignore-submodules=none --
-git diff --cached --quiet --ignore-submodules=none HEAD --
-```
-
-Exit code 0 means clean, 1 means tracked changes, and any other exit is an admission error. Untracked discovery must use the NUL-delimited equivalent of:
-
-```text
-git ls-files --others --exclude-standard -z
-```
-
-Ignored files are not enumerated. They were already outside the prior clean-tree rule and remain a known environment-parity blind spot.
-
-## Replacement for §3 default target
-
-Replace the existing default-target paragraph with:
-
-> The code-defined default worktree root on Windows is:
->
-> ```text
-> D:\ParleyWorktrees
-> ```
->
-> The default target is:
->
-> ```text
-> D:\ParleyWorktrees\<project-name>-<run-id>
-> ```
->
-> `--worktree-root ABSOLUTE_DIR` may override the root for one new run. There is no environment-variable override in v2. The resolved root is persisted in `run.created` and cannot change during the run.
->
-> Parley creates the root when absent, then resolves and validates it before deriving the target. The target name is generated from a sanitized project slug and Parley-generated run ID; user-controlled path separators and `..` are forbidden.
->
-> A different drive is supported because Git worktrees accept absolute paths. Parley explicitly uses `--no-relative-paths` so a repository-level `worktree.useRelativePaths` setting cannot produce invalid cross-volume linkage. The worktree is created with `--lock` because v2 retains it for manual disposition.
->
-> The linked worktree still shares Git administrative data and object storage with the source repository. Moving the checkout to D: provides capacity and change isolation; it does not create repository-metadata or security isolation.
-
-## Replacement for §3 assumptions
-
-Replace the clean-tree assumption with:
-
-> Assumption: refusing tracked staged or unstaged changes prevents the source-fidelity failure this gate is intended to prevent, because the run is constructed from committed HEAD. Falsified by a demonstrated tracked working-tree change that is absent from HEAD but not detected by the two explicit diff checks.
->
-> Assumption: tolerating untracked files is safe for source preservation because they were never part of the source commit. Falsified by evidence that worktree creation copies or mutates an untracked source path.
->
-> Assumption: warning about non-ignored untracked paths provides adequate visibility into environment differences. Falsified if a supported workflow materially depends on ignored or untracked local files and requires them to be copied into the run. Copying such files requires a separate approved snapshot design.
->
-> Assumption: `D:\ParleyWorktrees` is an available fixed local volume with adequate capacity on the owner’s host. Falsified by runtime volume, writability, availability, or checkout validation.
->
-> Assumption: explicit absolute linkage and post-create validation are sufficient for cross-drive worktrees. Falsified if controlled PARLEY-V2-006 tests show invalid Git administration links, checkout failures, or incorrect top-level resolution.
-
-## Addition to §4 transcript kinds
-
-Add this allowed record kind:
-
-```text
-source.untracked
-  {count, paths}
-```
-
-Add this normative text:
-
-> `source.untracked` is a system record written after admission has enumerated non-ignored untracked paths and before `run.created` or the first model invocation. `count` is the exact number of paths and `paths` contains the complete lexically sorted project-relative list. Paths are captured as data, not interpolated into a shell command.
->
-> The event records that the dedicated worktree does not contain those paths. It is a warning, not an admission failure. The viewer labels it `SOURCE DIFFERENCE`.
->
-> Stderr prints the count and path list before requesting the maker. The transcript event remains the durable audit record; stderr alone is insufficient because an unattended owner may never see it.
->
-> Ignored files are not listed or implied to be present.
-
-## Replacement for §7 `run` command
-
-Replace the orchestrated-run command block with:
-
-```text
-python parley.py run
-                 --input FILE
-                 --project DIR
-                 --thread NAME
-                 --allow-write
-                 [--worktree-root ABSOLUTE_DIR]
-                 [--max-iterations 1..20]
-                 [--wait-on-limit]
-                 [--max-total-limit-wait SECONDS]
-                 [--max-limit-wait SECONDS]
-                 [--max-consecutive-limit-waits N]
-                 [--maker-driver codex]
-                 [--maker-provider PROVIDER]
-                 [--maker-model MODEL]
-                 [--maker-timeout SECONDS]
-                 [--reviewer-driver codex]
-                 [--reviewer-provider PROVIDER]
-                 [--reviewer-model MODEL]
-                 [--reviewer-timeout SECONDS]
-```
-
-Add:
-
-> `--worktree-root` applies only to creation of a new run. It must be absolute. It is persisted and cannot be supplied to status, steering, stop, or any continuation operation.
->
-> When omitted on Windows, the default is `D:\ParleyWorktrees`. When that default is not a valid absolute path on the current platform, omission is an admission error that instructs the operator to provide `--worktree-root`.
-
-## Replacement for §9 product claim
-
-Replace the final product-claim passage with:
-
-> The guaranteed Parley v2 runner is Codex. Its supported provider surface is OpenAI frontier models addressable through Codex and compatible local models addressable through Codex’s Ollama or LM Studio provider routes.
->
-> The product claim is:
->
-> > Parley supports models addressable through its configured Codex runner and compatible with the participant’s required capabilities.
->
-> Parley does not claim support for every local model, every frontier model, or Claude Code. PARLEY-V2-009 is an evidence-only Claude Code feasibility probe. PARLEY-V2-010 exists only if that probe earns promotion. Claude Code support is not a v2 completion criterion and may never ship.
-
-## Replacement for PARLEY-V2-006 in §10
-
-Replace that stage with:
-
-### PARLEY-V2-006 — Enforce worktree and writable-run admission
-
-- Spec coverage: sections 3, 4, 7, and state persistence from section 8.
-- Principal objective: prove that writable execution is admitted only inside a validated dedicated worktree through capable runners.
-- Smallest sufficient change: `worktrees.py`, tracked-change detection, untracked-source warnings, configurable absolute worktree root, cross-drive creation, capability gates, recovery metadata, and temporary-repository tests. No public orchestration loop.
-- Shippable state: consultation remains usable; internal worktree preparation is complete and tested but is not yet user-exposed.
-- New user capability: none.
-- Acceptance criteria:
-  - Staged or unstaged changes to tracked files refuse admission.
-  - Tracked deletions, renames, conflicts, type changes, and dirty tracked submodules refuse admission.
-  - Non-ignored untracked files do not refuse admission.
-  - Every such untracked path appears in stderr and one exact `source.untracked` event.
-  - Ignored paths are neither copied nor represented as enumerated.
-  - The default root resolves to `D:\ParleyWorktrees` on Windows.
-  - An absolute `--worktree-root` equivalent overrides it for one test run.
-  - Relative roots, nonexistent unavailable volumes, unwritable roots, traversal targets, existing targets, registered targets, and targets resolving inside the source project refuse before model launch.
-  - Cross-drive creation uses detached, locked, absolute worktree linkage.
-  - Windows long-path risk is refused or warned according to the amended admission rule.
-  - Post-create Git validation confirms the exact target and source commit.
-  - The source checkout remains unchanged.
-  - Interrupted or failed setup leaves either no linked worktree or an explicitly recorded recoverable one.
-- Kill criteria:
-  - A tracked modification can be silently excluded.
-  - An untracked path is copied without an approved snapshot rule.
-  - Target resolution can escape the configured root or enter the source project.
-  - Cross-drive linkage is relative, invalid, or unvalidated.
-  - Codex cannot enforce workspace-write at the resulting D: worktree.
-  - Cleanup can discard run work.
-- Promotion criteria: controlled tests demonstrate tracked-change refusal, untracked-warning admission, cross-drive creation, path validation, correct runner policies, and retained recovery without modifying the source checkout.
-- Deliberately out of scope: copying untracked or ignored files, dirty-tree snapshots, automatic cleanup, merge/push/promotion, arbitrary environment-variable configuration, and security claims based on the D: location.
-- Assumptions and falsifiers: the amended §3 assumptions apply.
-
-PARLEY-V2-009 and PARLEY-V2-010 remain last and unchanged. The execution order remains:
-
-```text
-001 → 001A → 002 → 002L → 004 → 003 → 005 → 006 → 007 → 008 → 009 → 010
-```
-
-Proceed with **PARLEY-V2-001A** first.
+Parley configures standard output and error as UTF-8 with replacement when the host
+streams support reconfiguration. A console encoding mismatch must not prevent delivery of
+a completed answer. Transcript and registry state are persisted before answer printing.
+If a host-supplied stream refuses reconfiguration, Parley preserves the durable record
+but cannot guarantee that stream's behaviour.

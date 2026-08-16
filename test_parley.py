@@ -281,14 +281,11 @@ class FailureRecording(unittest.TestCase):
         self.assertEqual(recs[1]["role"], "gpt")
         self.assertNotIn("error", recs[1])
         self.assertEqual(recs[1]["text"], "THE ANSWER")
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class ConsoleEncoding(unittest.TestCase):
-    """A legacy console code page must not destroy an already-completed turn."""
+    """A legacy console code page must not withhold an already-completed answer.
+
+    The record is durable either way; this is about delivery to the caller.
+    """
 
     def test_reconfigures_streams_to_utf8_replace(self):
         calls = []
@@ -327,3 +324,6 @@ class ConsoleEncoding(unittest.TestCase):
             mock.patch.object(parley.sys, "stderr", Hostile()),
         ):
             parley.use_utf8_console()  # must not raise
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
