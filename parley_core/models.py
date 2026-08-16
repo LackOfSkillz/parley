@@ -10,6 +10,10 @@ Spec: sections 1 and 2.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard
+    from .limits import LimitInfo
 from enum import Enum
 
 
@@ -28,6 +32,7 @@ class AccessPolicy(str, Enum):
 class RunStatus(str, Enum):
     COMPLETED = "completed"
     PARTIAL = "partial"  # non-zero exit that still produced a usable answer
+    LIMITED = "limited"  # a temporally recoverable provider usage limit
     FAILED = "failed"  # no usable answer
     TIMED_OUT = "timed_out"  # kept distinct from other failure
 
@@ -74,9 +79,13 @@ class RunMetadata:
     duration_ms: int = 0
     diagnostic: str | None = None
     output_retained_at: str | None = None
+    # Present if and only if status is LIMITED. A limit marker without evidence
+    # would let an ordinary failure masquerade as something worth waiting for.
+    limit: LimitInfo | None = None
 
     def to_json(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        return d
 
 
 @dataclass(frozen=True)

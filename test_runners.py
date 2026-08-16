@@ -262,5 +262,72 @@ class LegacyWrapperTranslation(unittest.TestCase):
         )
 
 
+class LimitedOutcomeThroughRunner(unittest.TestCase):
+    """LIMITED must be reachable through the real runner, like every other status."""
+
+    def runner(self):
+        return codex_runner.CodexRunner(
+            runners.resolve_spec(), "codex", cli_version="0.147.0"
+        )
+
+    def test_rate_limited_stream_yields_limited_with_evidence(self):
+        import json as _json
+
+        payload = _json.dumps(
+            {
+                "status": 429,
+                "error": {
+                    "type": "rate_limit_error",
+                    "message": "try again in 5 minutes",
+                },
+            }
+        )
+        stdout = _json.dumps({"type": "turn.failed", "error": {"message": payload}})
+        proc = subprocess.CompletedProcess([], 1, stdout=stdout, stderr="")
+        with (
+            mock.patch.object(codex_runner.subprocess, "run", return_value=proc),
+            mock.patch.object(Path, "is_file", return_value=False),
+            mock.patch.object(Path, "unlink"),
+        ):
+            r = self.runner().run("p", Path.cwd(), "s", AccessPolicy.READ_ONLY)
+        self.assertIs(r.status, RunStatus.LIMITED)
+        self.assertIsNotNone(r.metadata.limit)
+        self.assertEqual(r.metadata.limit.source, "json")
+        self.assertEqual(r.metadata.limit.retry_after_seconds, 300)
+        self.assertFalse(r.usable)
+
+    def test_a_non_limit_failure_stays_failed_with_no_limit_evidence(self):
+        proc = subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="Error: not logged in"
+        )
+        with (
+            mock.patch.object(codex_runner.subprocess, "run", return_value=proc),
+            mock.patch.object(Path, "is_file", return_value=False),
+            mock.patch.object(Path, "unlink"),
+        ):
+            r = self.runner().run("p", Path.cwd(), "s", AccessPolicy.READ_ONLY)
+        self.assertIs(r.status, RunStatus.FAILED)
+        self.assertIsNone(r.metadata.limit)
+
+    def test_a_usable_answer_beats_a_limit_marker(self):
+        """A partial answer is worth more than a retry; it must not be discarded."""
+        import json as _json
+
+        payload = _json.dumps(
+            {"status": 429, "error": {"type": "rate_limit_error", "message": "x"}}
+        )
+        stdout = _json.dumps({"type": "turn.failed", "error": {"message": payload}})
+        proc = subprocess.CompletedProcess([], 1, stdout=stdout, stderr="")
+        with (
+            mock.patch.object(codex_runner.subprocess, "run", return_value=proc),
+            mock.patch.object(Path, "is_file", return_value=True),
+            mock.patch.object(Path, "read_text", return_value="THE ANSWER"),
+            mock.patch.object(Path, "unlink"),
+        ):
+            r = self.runner().run("p", Path.cwd(), "s", AccessPolicy.READ_ONLY)
+        self.assertIs(r.status, RunStatus.PARTIAL)
+        self.assertEqual(r.answer, "THE ANSWER")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

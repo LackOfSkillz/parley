@@ -19,6 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from .limits import classify
 from .models import (
     AccessPolicy,
     RunMetadata,
@@ -138,10 +139,12 @@ class CodexRunner:
         binary: str,
         timeout: int = 900,
         warn=None,
+        cli_version: str | None = None,
     ) -> None:
         self.spec = spec
         self.binary = binary
         self.timeout = timeout
+        self.cli_version = cli_version
         self._warn = warn or (lambda _msg: None)
 
     def run(
@@ -236,6 +239,22 @@ class CodexRunner:
                     ),
                 )
             err = (proc.stderr or proc.stdout or "").strip()[:700]
+            # A positively identified, temporally recoverable usage limit is a
+            # distinct outcome -- the caller may choose to wait it out. Anything
+            # not positively identified stays an ordinary failure.
+            limit = classify(proc.stdout or "", proc.stderr or "", self.cli_version)
+            if limit is not None:
+                return RunResult(
+                    answer="",
+                    session=found or session,
+                    status=RunStatus.LIMITED,
+                    metadata=RunMetadata(
+                        exit_code=proc.returncode,
+                        duration_ms=elapsed,
+                        diagnostic=f"codex exited {proc.returncode}: {err}",
+                        limit=limit,
+                    ),
+                )
             # An expected outcome: the process ran and reported failure. Structured
             # result, not an exception -- RunnerError is reserved for launch
             # failure, unreadable retained output, and infrastructure faults.
