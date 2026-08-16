@@ -40,11 +40,12 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+from parley_core import codex_runner, runners
+from parley_core.models import AccessPolicy
 
 HERE = Path(__file__).resolve().parent
 REGISTRY = HERE / "threads.json"
@@ -85,16 +86,8 @@ ROLES = {
     ),
 }
 
-# Keys the Codex event stream has used for the session identifier. The current
-# CLI emits {"type":"thread.started","thread_id":...}; matching a set rather than
-# one name keeps resume working across versions.
-SESSION_KEYS = (
-    "thread_id",
-    "session_id",
-    "conversation_id",
-    "sessionId",
-    "conversationId",
-)
+# Re-exported from the Codex driver, which owns the event-stream shape.
+SESSION_KEYS = codex_runner.SESSION_KEYS
 
 
 def now() -> str:
@@ -183,153 +176,48 @@ def append_log(tid: str, record: dict) -> None:
 
 
 # -------------------------------------------------------------------- codex
+# The Codex mechanics now live in parley_core.codex_runner. These wrappers keep
+# this module's existing surface -- the names the characterization suite pins --
+# while the implementation sits behind the runner contract.
+#
+# codex_bin() deliberately stays here: it is the single patchable seam for binary
+# resolution, and the runner is pure with respect to PATH lookup, taking the
+# resolved binary as an argument.
+
+
 def find_session_id(stream: str) -> str | None:
-    """Pull the session id out of the --json event stream.
-
-    Scans every JSON object for any known session-id key at any depth, so a
-    change to the event envelope degrades to "start a new thread" rather than
-    silently breaking resume.
-    """
-
-    def walk(o: object) -> str | None:
-        if isinstance(o, dict):
-            for key in SESSION_KEYS:
-                v = o.get(key)
-                if isinstance(v, str) and v:
-                    return v
-            for v in o.values():
-                hit = walk(v)
-                if hit:
-                    return hit
-        elif isinstance(o, list):
-            for v in o:
-                hit = walk(v)
-                if hit:
-                    return hit
-        return None
-
-    for line in stream.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            hit = walk(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-        if hit:
-            return hit
-    return None
+    """Pull the session id out of the --json event stream."""
+    return codex_runner.find_session_id(stream)
 
 
 def build_cmd(
     project: Path, resume_id: str | None, model: str | None, out_file: Path
 ) -> list[str]:
-    """Assemble the codex argv.
-
-    Exec-level options MUST precede the `resume` subcommand -- `resume` accepts
-    only its own arguments, so a trailing `-s` is an "unexpected argument" error
-    rather than an override. Placing `-s read-only` first pins the sandbox on
-    fresh and resumed turns alike.
-    """
-    cmd = [codex_bin(), "exec", "-s", "read-only"]
-    if not resume_id:
-        # `resume` restores the session's recorded working root; -C is only
-        # meaningful (and only accepted) when starting fresh.
-        cmd += ["-C", str(project)]
-    if model:
-        cmd += ["-m", model]
-    if resume_id:
-        cmd += ["resume", resume_id]
-    cmd += ["--json", "-o", str(out_file), "--skip-git-repo-check", "-"]
-    return cmd
+    """The Codex argv for a read-only consultation turn."""
+    return codex_runner.build_argv(
+        codex_bin(), project, resume_id, model, out_file, AccessPolicy.READ_ONLY
+    )
 
 
 def run_codex(
     prompt: str, project: Path, resume_id: str | None, model: str | None, timeout: int
 ) -> tuple[str, str | None, bool]:
-    """Run one non-interactive Codex turn.
+    """Run one consultation turn through the runner contract.
 
-    Returns (answer, session_id, partial). `partial` marks a turn that produced
-    output despite a non-zero exit.
+    Returns the legacy (answer, session, partial) triple. Consultation is
+    read-only, and admission refuses anything else before a process launches.
     """
-    # mkstemp hands back an OPEN descriptor; close it before Codex writes to the
-    # path, or the later unlink fails on Windows.
-    fd, tmp_path = tempfile.mkstemp(prefix="parley-", suffix=".md")
-    os.close(fd)
-    out_file = Path(tmp_path)
-
-    def discard() -> None:
-        """Remove the temp file when it holds nothing worth keeping."""
-        try:
-            out_file.unlink(missing_ok=True)
-        except OSError as e:
-            warn(f"could not remove temporary file {out_file}: {e}")
-
-    try:
-        proc = subprocess.run(
-            build_cmd(project, resume_id, model, out_file),
-            input=prompt,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,  # a non-zero exit is handled below, not raised
-            cwd=str(project),  # resume filters recorded sessions by cwd
-        )
-    except subprocess.TimeoutExpired:
-        discard()
-        raise SystemExit(
-            f"codex timed out after {timeout}s (raise with --timeout)"
-        ) from None
-    except FileNotFoundError:
-        discard()
-        raise SystemExit("could not execute the codex CLI") from None
-
-    # Reading and cleanup have different recovery requirements, so they are NOT
-    # under one finally. If the read fails, the temp file may hold the only copy
-    # of a completed answer and must survive.
-    answer = ""
-    if out_file.is_file():
-        try:
-            answer = out_file.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError as e:
-            raise SystemExit(
-                f"codex finished but its output could not be read: {e}\n"
-                f"  The answer is retained at: {out_file}"
-            ) from None
-    discard()
-
-    partial = False
-    if proc.returncode != 0:
-        if answer:
-            # Output despite a bad exit: keep it, but never present it as clean.
-            partial = True
-            warn(f"codex exited {proc.returncode} but produced output; marked partial")
-        else:
-            err = (proc.stderr or proc.stdout or "").strip()[:700]
-            low = err.lower()
-            # Order matters: a usage error quotes "session" in its help text,
-            # which once made a malformed command look like an expired session.
-            if "unexpected argument" in low or "usage:" in low:
-                hint = "\n  Malformed codex invocation -- a bug in parley.py, not your session."
-            elif "login" in low or "not logged in" in low or "unauthor" in low:
-                hint = "\n  Run `codex login` and sign in with your ChatGPT account."
-            elif "rate" in low or "quota" in low or "limit" in low:
-                hint = "\n  Plan allowance may be exhausted for this window."
-            elif resume_id and (
-                "rollout" in low or "resume" in low or "not found" in low
-            ):
-                hint = "\n  That stored session is gone -- rerun with --new-thread."
-            else:
-                hint = ""
-            raise SystemExit(f"codex exited {proc.returncode}: {err}{hint}")
-
-    return (
-        answer or "(codex returned no final message)",
-        find_session_id(proc.stdout or ""),
-        partial,
+    spec = runners.resolve_spec(driver="codex", provider="openai", model=model)
+    runners.admit(spec, AccessPolicy.READ_ONLY)
+    runner = codex_runner.CodexRunner(
+        spec, binary=codex_bin(), timeout=timeout, warn=warn
     )
+    try:
+        result = runner.run(prompt, project, resume_id, AccessPolicy.READ_ONLY)
+    except runners.RunnerError as e:
+        # The legacy surface reports failure as SystemExit with a plain message.
+        raise SystemExit(str(e)) from None
+    return result.answer, result.session, result.partial
 
 
 # ------------------------------------------------------------------- prompt

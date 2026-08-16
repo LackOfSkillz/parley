@@ -20,6 +20,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import parley
 import serve
+from parley_core import codex_runner
 
 
 class SandboxPinning(unittest.TestCase):
@@ -106,7 +107,9 @@ class AnswerPreservation(unittest.TestCase):
     def test_unlink_failure_still_returns_the_answer(self):
         with (
             mock.patch.object(parley, "codex_bin", return_value="codex"),
-            mock.patch.object(parley.subprocess, "run", return_value=self._proc()),
+            mock.patch.object(
+                codex_runner.subprocess, "run", return_value=self._proc()
+            ),
             mock.patch.object(Path, "read_text", return_value="THE ANSWER"),
             mock.patch.object(Path, "is_file", return_value=True),
             mock.patch.object(Path, "unlink", side_effect=OSError("locked")),
@@ -119,7 +122,9 @@ class AnswerPreservation(unittest.TestCase):
     def test_read_failure_retains_the_file_and_reports_its_path(self):
         with (
             mock.patch.object(parley, "codex_bin", return_value="codex"),
-            mock.patch.object(parley.subprocess, "run", return_value=self._proc()),
+            mock.patch.object(
+                codex_runner.subprocess, "run", return_value=self._proc()
+            ),
             mock.patch.object(Path, "is_file", return_value=True),
             mock.patch.object(Path, "read_text", side_effect=OSError("io")),
             mock.patch.object(Path, "unlink") as unlink,
@@ -132,7 +137,9 @@ class AnswerPreservation(unittest.TestCase):
     def test_nonzero_exit_with_output_is_kept_but_marked_partial(self):
         with (
             mock.patch.object(parley, "codex_bin", return_value="codex"),
-            mock.patch.object(parley.subprocess, "run", return_value=self._proc(rc=3)),
+            mock.patch.object(
+                codex_runner.subprocess, "run", return_value=self._proc(rc=3)
+            ),
             mock.patch.object(Path, "is_file", return_value=True),
             mock.patch.object(Path, "read_text", return_value="PARTIAL"),
             mock.patch.object(Path, "unlink"),
@@ -144,7 +151,9 @@ class AnswerPreservation(unittest.TestCase):
     def test_nonzero_exit_without_output_raises(self):
         with (
             mock.patch.object(parley, "codex_bin", return_value="codex"),
-            mock.patch.object(parley.subprocess, "run", return_value=self._proc(rc=3)),
+            mock.patch.object(
+                codex_runner.subprocess, "run", return_value=self._proc(rc=3)
+            ),
             mock.patch.object(Path, "is_file", return_value=False),
             mock.patch.object(Path, "unlink"),
             self.assertRaises(SystemExit),

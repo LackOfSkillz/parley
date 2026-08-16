@@ -25,6 +25,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import parley
+from parley_core import codex_runner
 
 
 class Harness(unittest.TestCase):
@@ -544,7 +545,7 @@ class CodexCommandSemantics(unittest.TestCase):
 
             with (
                 mock.patch.object(parley, "codex_bin", return_value="codex"),
-                mock.patch.object(parley.subprocess, "run", side_effect=fake_run),
+                mock.patch.object(codex_runner.subprocess, "run", side_effect=fake_run),
                 mock.patch.object(Path, "is_file", return_value=True),
                 mock.patch.object(Path, "read_text", return_value="A"),
                 mock.patch.object(Path, "unlink"),
