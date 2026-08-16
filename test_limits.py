@@ -191,6 +191,54 @@ class EvidenceGradeIsHonest(unittest.TestCase):
         self.assertEqual(self.limited().to_json()["evidence"], "structural")
 
 
+class ResetAtIsRecordedNotUsed(unittest.TestCase):
+    """A provider reset value is preserved verbatim and never drives timing.
+
+    No captured evidence establishes its format, so deriving a wait from it
+    would be guessing dressed as provider instruction.
+    """
+
+    RESET = "2026-08-17T04:00:00Z"
+
+    def limited_with_reset(self):
+        return classify(
+            event(
+                {
+                    "status": 429,
+                    "reset_at": self.RESET,
+                    "error": {"type": "rate_limit_error", "message": "slow"},
+                }
+            )
+        )
+
+    def test_reset_survives_classification_unchanged(self):
+        self.assertEqual(self.limited_with_reset().reset_at, self.RESET)
+
+    def test_reset_survives_serialisation_unchanged(self):
+        self.assertEqual(self.limited_with_reset().to_json()["reset_at"], self.RESET)
+
+    def test_reset_does_not_make_the_wait_non_blind(self):
+        info = self.limited_with_reset()
+        self.assertIsNone(info.retry_after_seconds)
+        self.assertTrue(is_blind(info))  # a reset is not a retry-after
+
+    def test_reset_does_not_alter_the_blind_backoff(self):
+        with_reset = wait_seconds(self.limited_with_reset(), attempt=2)
+        without = wait_seconds(
+            classify(
+                event(
+                    {
+                        "status": 429,
+                        "error": {"type": "rate_limit_error", "message": "slow"},
+                    }
+                )
+            ),
+            attempt=2,
+        )
+        self.assertEqual(with_reset, without)
+        self.assertEqual(with_reset, 900)
+
+
 class ProseDetectionIsNotImplemented(unittest.TestCase):
     """No stderr limit signature has captured evidence, so none is matched."""
 

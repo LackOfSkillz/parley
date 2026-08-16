@@ -815,8 +815,8 @@ Status: accepted.
 - New user capability: none yet.
 - Acceptance criteria: a fixture-backed envelope carrying a rate/plan status classifies as `limited` with `evidence="structural"` until a real exhaustion is captured and regraded to `observed`; authentication,
   expired-session, malformed-command, timeout, network and arbitrary non-zero fixtures do
-  not; reset/retry-after parsing tested where present; blind backoff explicitly marked
-  heuristic.
+  not; retry-after parsing tested where present; a supplied reset_at is preserved
+  unchanged and never used for timing; blind backoff explicitly marked as a guess.
 - Kill criteria: no reliable discriminator exists; classification degenerates to generic
   non-zero retry; any detection depends on prose rather than a fixture-backed envelope.
 - Promotion criteria: classifier grounded in a fixture-backed envelope, evidence grade recorded honestly, and false-positive cases covered.
@@ -1109,6 +1109,11 @@ limit.exhausted
 }
 ```
 
+The viewer must render `evidence` and the blind/derived status of any wait. A
+structural inference shown as though it were an observed capture, or a guessed
+backoff shown as though the provider asked for it, is the misrepresentation this
+schema exists to prevent.
+
 `limit.wait.data`:
 
 ```json
@@ -1260,7 +1265,7 @@ Limit handling may never:
 - Reset the iteration counter.
 - Change access policy, runner identity, worktree, or session without an explicit state transition.
 - Start a fresh session automatically.
-- Hide detector source or blind-backoff status.
+- Hide detector source, evidence grade, or blind-backoff status.
 - Prevent stop controls or Ctrl-C.
 - Rewrite an earlier attempt record.
 - Convert exhaustion into approval, revision, or promotion.
