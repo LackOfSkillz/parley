@@ -1074,8 +1074,12 @@ If the provider supplies `retry_after_seconds`, Parley adds the five-second safe
 margin and applies both wait bounds:
 
 ```text
-resume_after = retry_after_seconds + 5
+wait_seconds = retry_after_seconds + 5
+resume_after = detected_at + wait_seconds
 ```
+
+`retry_after_seconds` is a duration; `resume_after` is a timestamp. The bounded
+delay is added to the detection time -- they are not the same quantity.
 
 `reset_at` is recorded but does not direct timing until its format is
 fixture-backed; a reset-only result uses bounded blind backoff and is labelled
@@ -1114,7 +1118,7 @@ limit.exhausted
 }
 ```
 
-The viewer must render `evidence` and the blind/derived status of any wait. A
+The viewer must display, for a waiting turn: the `WAITING_LIMIT` state; the lane and reason; the detector source; the evidence grade; whether the wait is provider-directed or blind; and the computed resume time.
 structural inference shown as though it were an observed capture, or a guessed
 backoff shown as though the provider asked for it, is the misrepresentation this
 schema exists to prevent.
