@@ -561,3 +561,86 @@ class CodexCommandSemantics(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ConsoleDeliversAnswers(Harness):
+    """PARLEY-V2-001A: the real output path must survive a legacy code page.
+
+    The unit tests in test_parley.py prove the helper reconfigures streams. This
+    proves main() actually invokes it before delivering an answer.
+    """
+
+    class LegacyStream:
+        """A cp1252 console: refuses non-latin-1 text until reconfigured.
+
+        Not a StringIO subclass -- io objects expose `encoding` read-only, so the
+        code page cannot be flipped on one.
+        """
+
+        def __init__(self, reconfigurable=True):
+            self.encoding = "cp1252"
+            self.errors = "strict"
+            self.reconfigurable = reconfigurable
+            self.buf = []
+
+        def reconfigure(self, encoding=None, errors=None, **kw):
+            if not self.reconfigurable:
+                raise OSError("detached")
+            self.encoding = encoding or self.encoding
+            self.errors = errors or self.errors
+
+        def write(self, text):
+            if self.encoding == "cp1252" and self.errors == "strict":
+                text.encode("cp1252")  # raises UnicodeEncodeError, as a console would
+            self.buf.append(text)
+            return len(text)
+
+        def flush(self):
+            pass
+
+        def getvalue(self):
+            return "".join(self.buf)
+
+    def _run(self, stream, answer):
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "parley.py",
+                    "--input",
+                    str(self.input),
+                    "--project",
+                    str(self.project),
+                ],
+            ),
+            mock.patch.object(
+                parley, "run_codex", return_value=(answer, "sess-1", False)
+            ),
+            mock.patch.object(sys, "stdout", stream),
+        ):
+            parley.main()
+
+    def test_answer_with_non_cp1252_characters_is_delivered(self):
+        stream = self.LegacyStream()
+        self._run(stream, "VERDICT: accept → promote — done")
+        out = stream.getvalue()
+        self.assertIn("→", out)
+        self.assertIn("—", out)
+        self.assertEqual(stream.encoding, "utf-8")
+        self.assertEqual(stream.errors, "replace")
+
+    def test_the_legacy_stream_really_would_have_failed(self):
+        """Guards the test itself: without reconfiguration this must raise."""
+        raw = self.LegacyStream()
+        with self.assertRaises(UnicodeEncodeError):
+            raw.write("→")
+
+    def test_unreconfigurable_stream_still_leaves_the_record_durable(self):
+        stream = self.LegacyStream(reconfigurable=False)
+        self._run(stream, "plain answer")
+        self.assertEqual(self.records()[1]["text"], "plain answer")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

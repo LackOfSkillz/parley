@@ -285,3 +285,45 @@ class FailureRecording(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ConsoleEncoding(unittest.TestCase):
+    """A legacy console code page must not destroy an already-completed turn."""
+
+    def test_reconfigures_streams_to_utf8_replace(self):
+        calls = []
+
+        class Fake:
+            def reconfigure(self, **kw):
+                calls.append(kw)
+
+        with (
+            mock.patch.object(parley.sys, "stdout", Fake()),
+            mock.patch.object(parley.sys, "stderr", Fake()),
+        ):
+            parley.use_utf8_console()
+        self.assertEqual(len(calls), 2)
+        for kw in calls:
+            self.assertEqual(kw["encoding"], "utf-8")
+            self.assertEqual(kw["errors"], "replace")
+
+    def test_streams_without_reconfigure_are_tolerated(self):
+        class NoReconfigure:
+            pass
+
+        with (
+            mock.patch.object(parley.sys, "stdout", NoReconfigure()),
+            mock.patch.object(parley.sys, "stderr", NoReconfigure()),
+        ):
+            parley.use_utf8_console()  # must not raise
+
+    def test_reconfigure_failure_is_swallowed(self):
+        class Hostile:
+            def reconfigure(self, **kw):
+                raise OSError("detached")
+
+        with (
+            mock.patch.object(parley.sys, "stdout", Hostile()),
+            mock.patch.object(parley.sys, "stderr", Hostile()),
+        ):
+            parley.use_utf8_console()  # must not raise

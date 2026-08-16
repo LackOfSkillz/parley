@@ -167,6 +167,14 @@ pinning on both fresh and resumed turns, transcript-id collision resistance,
 answer preservation when cleanup or reading fails, non-zero-exit policy, failure
 recording, and viewer path traversal.
 
+## Output encoding
+
+Parley configures standard output and error as UTF-8 with replacement when the
+host streams support reconfiguration, so a console code-page mismatch cannot
+withhold a completed answer. Transcript and registry state are persisted *before*
+the answer is printed. If a host-supplied stream refuses reconfiguration, the
+durable record still holds, but Parley makes no promise about that stream.
+
 ## Requirements
 
 Python 3.9+ (developed on 3.11), Node 20+ for the Codex CLI, and a ChatGPT

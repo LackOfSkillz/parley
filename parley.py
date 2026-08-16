@@ -105,6 +105,25 @@ def warn(msg: str) -> None:
     print(f"warning: {msg}", file=sys.stderr)
 
 
+def use_utf8_console() -> None:
+    """Stop a legacy console code page from withholding a completed answer.
+
+    Windows consoles default to cp1252 here, so printing an answer containing an
+    arrow or an em dash raises UnicodeEncodeError. That happens AFTER the turn is
+    logged and the registry written, so the result stays durable -- but it is not
+    delivered to the caller, who sees a traceback instead. Replace rather than
+    fail: a mangled character beats an undelivered answer.
+
+    Streams that cannot be reconfigured are tolerated. The durable record still
+    holds, but this function cannot make any promise about such a stream.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass  # redirected to something without reconfigure; nothing to do
+
+
 def codex_bin() -> str:
     exe = shutil.which("codex")
     if not exe:
@@ -372,6 +391,8 @@ def main() -> int:
     ap.add_argument("--new-thread", action="store_true", help="start this thread over")
     ap.add_argument("--list", action="store_true", help="list all threads and exit")
     args = ap.parse_args()
+
+    use_utf8_console()
 
     reg = read_registry()
 
