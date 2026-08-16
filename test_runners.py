@@ -357,9 +357,11 @@ class LimitDoesNotLoseTheLegacyHint(unittest.TestCase):
             self.assertRaises(SystemExit) as ctx,
         ):
             parley.run_codex("p", Path.cwd(), None, None, 10)
-        msg = str(ctx.exception)
-        self.assertIn("codex exited 1", msg)
-        self.assertIn("Plan allowance", msg)
+        self.assertEqual(
+            str(ctx.exception),
+            "codex exited 1: rate limit hit"
+            "\n  Plan allowance may be exhausted for this window.",
+        )
 
 
 if __name__ == "__main__":

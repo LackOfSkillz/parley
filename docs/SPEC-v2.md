@@ -813,13 +813,13 @@ Status: accepted.
   calculation. No sleep loop and no public flag yet.
 - Shippable state: consultation unchanged; the classifier exists but nothing waits.
 - New user capability: none yet.
-- Acceptance criteria: rate and plan fixtures classify as `limited`; authentication,
+- Acceptance criteria: a fixture-backed envelope carrying a rate/plan status classifies as `limited` with `evidence="structural"` until a real exhaustion is captured and regraded to `observed`; authentication,
   expired-session, malformed-command, timeout, network and arbitrary non-zero fixtures do
   not; reset/retry-after parsing tested where present; blind backoff explicitly marked
   heuristic.
 - Kill criteria: no reliable discriminator exists; classification degenerates to generic
-  non-zero retry; detection depends on unversioned prose with no fixture.
-- Promotion criteria: evidence-backed classifier with false-positive cases covered.
+  non-zero retry; any detection depends on prose rather than a fixture-backed envelope.
+- Promotion criteria: classifier grounded in a fixture-backed envelope, evidence grade recorded honestly, and false-positive cases covered.
 ### PARLEY-V2-004 — Add the v2 storage compatibility layer
 
 - Spec coverage: sections 4 and 5, plus viewer portions of section 1.
@@ -997,8 +997,10 @@ limit signature has any captured evidence for its shape, so it is not implemente
 Therefore detection must use this precedence:
 
 1. A machine-readable JSON event proven by a captured, versioned fixture.
-2. A version-pinned stderr signature proven by a captured fixture.
-3. Otherwise classify the invocation as ordinary failure.
+2. Otherwise classify the invocation as ordinary failure.
+
+Prose-only stderr detection is NOT implemented and NOT authorised: no stderr
+limit signature has captured evidence for its shape.
 
 Exit code alone is never sufficient. Arbitrary error prose must not trigger hours of unattended waiting.
 
@@ -1010,9 +1012,10 @@ RunStatus = completed | partial | limited | failed | timed_out
 LimitInfo(
     kind: str,                    # plan | rate
     reason: str,
-    source: str,                  # json | stderr_heuristic
+    source: str,                  # json   (where the signal came from)
+    evidence: str,                # observed | structural  (how strong it is)
     retry_after_seconds: int | None,
-    reset_at: str | None,
+    reset_at: str | None,         # RECORDED, NOT USED FOR TIMING -- see below
     detector_version: str,
 )
 ```
@@ -1026,9 +1029,18 @@ limit: LimitInfo | None
 Rules:
 
 - `status=limited` requires `metadata.limit`.
+
+**Reset-based waiting is DEFERRED** (owner amendment, same ruling): no captured
+evidence establishes the format of a provider `reset_at`, so Parley records the
+value when a payload carries one but never derives a wait from it. Timing uses
+`retry_after_seconds` when present and bounded blind backoff otherwise. A
+provider reset is never silently treated as blind backoff -- it is recorded, and
+the wait is computed and labelled by the same rules as any other. Implementing
+reset-based timing requires a captured fixture showing its format, and
+deterministic clock injection.
 - A usable final answer wins over a limit marker and remains `partial`; it is not retried automatically.
-- A heuristic detector must identify its source honestly in the transcript and be scoped to observed CLI versions.
-- Unknown versions may use a machine-readable compatible event, but must not inherit stderr heuristics without verification.
+- A detector must identify both its source and its evidence grade honestly in the transcript.
+- Unknown CLI versions may use the machine-readable event, whose envelope is structured. There is no prose fallback to inherit.
 
 Assumption: a real limit failure exposes enough stable evidence to distinguish it from authentication, session, and network failures. Falsified by an exhaustion capture lacking any reliable discriminator. If falsified, automatic waiting is killed rather than generalized to all failures.
 
@@ -1089,7 +1101,8 @@ limit.exhausted
   "attempt": 1,
   "kind": "plan | rate",
   "reason": "provider diagnostic",
-  "source": "json | stderr_heuristic",
+  "source": "json",
+  "evidence": "observed | structural",
   "retry_after_seconds": null,
   "reset_at": null,
   "detector_version": "driver/version"
@@ -1104,7 +1117,9 @@ limit.exhausted
   "attempt": 1,
   "detected_at": "timestamp",
   "reason": "provider diagnostic",
-  "source": "json | stderr_heuristic",
+  "source": "json",
+  "evidence": "observed | structural",
+  "blind": true,
   "resume_after": "timestamp",
   "wait_seconds": 300,
   "cumulative_wait_seconds": 300

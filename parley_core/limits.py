@@ -61,6 +61,9 @@ class LimitInfo:
     source: str  # where the signal came from: "json"
     evidence: str  # how strong it is: "observed" | "structural"
     retry_after_seconds: int | None
+    # Recorded when a payload carries one; never used for timing. No captured
+    # evidence establishes its format, so deriving a wait from it would be
+    # guessing dressed as provider instruction.
     reset_at: str | None
     detector_version: str
 
