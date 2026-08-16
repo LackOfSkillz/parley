@@ -103,7 +103,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Parley</title><style>
 *{box-sizing:border-box}
 :root{--bg:#0d1117;--panel:#161b22;--edge:#21262d;--txt:#c9d1d9;--dim:#7d8590;
---claude:#d97757;--gpt:#10a37f;--accent:#58a6ff;--bad:#f85149;--warn:#d29922}
+--claude:#d97757;--gpt:#10a37f;--accent:#58a6ff;--bad:#f85149}
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--txt);
 font:14px/1.55 ui-sans-serif,-apple-system,"Segoe UI",sans-serif;display:flex}
@@ -139,8 +139,6 @@ font:13px/1.6 ui-monospace,"Cascadia Code",Consolas,monospace}
 .claude pre{border-left:3px solid var(--claude)}
 .gpt pre{border-left:3px solid var(--gpt)}
 .err pre{border-left:3px solid var(--bad)}
-.lim pre{border-left:3px solid var(--warn)}
-.lim .nm{color:var(--warn)} .lim .pill{background:var(--warn)}
 .err .nm{color:var(--bad)} .err .pill{background:var(--bad)}
 .fold{max-height:280px;overflow:hidden;position:relative}
 .fold::after{content:"";position:absolute;left:0;right:0;bottom:0;height:70px;
@@ -197,24 +195,16 @@ async function loadThreads(){
 }
 
 function render(m){
-  const who=m.error?'err':(m.limit?'lim':(m.role==='gpt'?'gpt':'claude'));
+  const who=m.error?'err':(m.role==='gpt'?'gpt':'claude');
   const el=document.createElement('div'); el.className='msg '+who;
   const bits=[clock(m.ts)];
   if(m.mode) bits.push(m.mode);
   if(m.turn) bits.push('turn '+m.turn);
   if(m.attached&&m.attached.length) bits.push('+'+m.attached.join(', '));
   if(m.tokens_out) bits.push(m.tokens_in+' in / '+m.tokens_out+' out');
-  // A structural inference shown as an observed capture, or a guessed backoff
-  // shown as provider instruction, is exactly what the schema exists to prevent.
-  if(m.limit){
-    bits.push('limit: '+m.limit.kind);
-    bits.push('evidence: '+(m.limit.evidence||'unknown'));
-    if(m.limit.retry_after_seconds) bits.push('provider asked '+m.limit.retry_after_seconds+'s');
-    else bits.push('wait would be a guess');
-  }
   const long=(m.text||'').length>1400;
   el.innerHTML=`<div class="who"><span class="pill"></span>
-    <span class="nm">${who==='err'?'FAILED':who==='lim'?'LIMITED':who==='gpt'?'GPT':'Claude'}</span>
+    <span class="nm">${who==='err'?'FAILED':who==='gpt'?'GPT':'Claude'}</span>
     <span class="meta">${esc(bits.join(' \\u00b7 '))}</span></div>
     <pre class="${long?'fold':''}">${esc(m.text)}</pre>
     ${long?'<button class="more">show full message</button>':''}`;

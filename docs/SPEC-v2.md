@@ -1070,11 +1070,16 @@ control polling interval:          5 seconds maximum
 
 Blind waits therefore progress approximately as 5, 15, 45, 120, 120, and 120 minutes, subject to the six-hour cumulative cap.
 
-If the provider supplies a reset or retry-after:
+If the provider supplies `retry_after_seconds`, Parley adds the five-second safety
+margin and applies both wait bounds:
 
 ```text
-resume_after = provider time + 5-second safety margin
+resume_after = retry_after_seconds + 5
 ```
+
+`reset_at` is recorded but does not direct timing until its format is
+fixture-backed; a reset-only result uses bounded blind backoff and is labelled
+`blind=true`.
 
 Parley refuses to wait when that delay exceeds either the remaining total-wait budget or the configured per-wait cap. It does not shorten the delay and retry prematurely.
 
