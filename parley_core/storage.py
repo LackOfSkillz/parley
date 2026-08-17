@@ -23,30 +23,107 @@ SCHEMA_V2 = 2
 # Every kind the v2 envelope permits, with the exact `data` keys each carries.
 # Declared rather than free-form: an undeclared field in `data` is how a schema
 # quietly becomes "whatever the last writer felt like".
-RECORD_KINDS: dict[str, tuple[str, ...]] = {
-    "consult.prompt": ("mode", "attached", "access_policy", "session_in"),
-    "consult.response": ("session_out", "run_status", "metadata"),
-    "consult.failure": ("error_type", "diagnostic", "retained_output_path"),
-    "run.created": (
-        "source_commit",
-        "worktree",
-        "max_iterations",
-        "allow_write",
-        "maker_spec",
-        "reviewer_spec",
+# Every kind the v2 envelope permits, with the EXACT `data` keys each carries.
+# Equality is enforced, not containment: a missing key is as wrong as an extra
+# one, because a consumer reading an absent field cannot tell "not set" from
+# "this producer forgot". Where the schema permits absence, the value is an
+# explicit null.
+RECORD_KINDS: dict[str, frozenset[str]] = {
+    # -- consultation (§4)
+    "consult.prompt": frozenset({"mode", "attached", "access_policy", "session_in"}),
+    "consult.response": frozenset({"session_out", "run_status", "metadata"}),
+    "consult.failure": frozenset({"error_type", "diagnostic", "retained_output_path"}),
+    # -- orchestration (§4)
+    "run.created": frozenset(
+        {
+            "source_commit",
+            "worktree",
+            "max_iterations",
+            "allow_write",
+            "maker_spec",
+            "reviewer_spec",
+        }
     ),
-    "steering.set": ("author", "supersedes"),
-    "steering.clear": ("author", "supersedes"),
-    "stop.requested": ("author",),
-    "state.changed": ("from", "to", "reason"),
-    "invocation.prompt": ("access_policy", "session_in", "diff_sha256"),
+    "run.finished": frozenset({"outcome", "source_commit", "worktree", "diff_sha256"}),
+    "steering.set": frozenset({"author", "supersedes"}),
+    "steering.clear": frozenset({"author", "supersedes"}),
+    "stop.requested": frozenset({"author"}),
+    "state.changed": frozenset({"from", "to", "reason"}),
+    "invocation.prompt": frozenset({"access_policy", "session_in", "diff_sha256"}),
+    "invocation.response": frozenset(
+        {"session_out", "run_status", "metadata", "diff_sha256"}
+    ),
+    "invocation.failure": frozenset(
+        {"error_type", "diagnostic", "retained_output_path", "diff_sha256"}
+    ),
+    "review.verdict": frozenset(
+        {"verdict", "summary", "required_changes", "diff_sha256"}
+    ),
+    # -- limits (§11)
+    "invocation.limited": frozenset(
+        {
+            "logical_turn_id",
+            "attempt",
+            "kind",
+            "reason",
+            "source",
+            "evidence",
+            "retry_after_seconds",
+            "reset_at",
+            "detector_version",
+        }
+    ),
+    "limit.wait": frozenset(
+        {
+            "logical_turn_id",
+            "attempt",
+            "detected_at",
+            "reason",
+            "source",
+            "evidence",
+            "blind",
+            "resume_after",
+            "wait_seconds",
+            "cumulative_wait_seconds",
+        }
+    ),
+    "limit.resumed": frozenset({"logical_turn_id", "next_attempt", "waited_seconds"}),
+    "limit.exhausted": frozenset(
+        {"logical_turn_id", "attempts", "cumulative_wait_seconds", "reason"}
+    ),
 }
+
+# Kinds produced by a model invocation. These MUST carry a runner snapshot:
+# a transcript that cannot say which runner produced a turn cannot support the
+# provenance the whole project rests on.
+MODEL_KINDS = frozenset(
+    {
+        "consult.prompt",
+        "consult.response",
+        "consult.failure",
+        "invocation.prompt",
+        "invocation.response",
+        "invocation.failure",
+        "invocation.limited",
+        "review.verdict",
+    }
+)
 
 PARTICIPANTS = frozenset({"maker", "reviewer", "human", "system"})
 
 
 class SchemaError(ValueError):
     """A record does not satisfy the declared v2 envelope."""
+
+
+class RegistryCorrupt(RuntimeError):
+    """The authoritative v2 registry exists but cannot be read.
+
+    Deliberately fatal rather than falling back to v1. v1 has no representation
+    for runs or per-lane sessions, so a silent fallback would present a
+    v2 conversation as though those had never existed -- losing exactly the
+    state a run depends on, without saying so.
+    """
 
 
 def now() -> str:
@@ -79,14 +156,26 @@ def make_record(
     if participant not in PARTICIPANTS:
         raise SchemaError(f"unknown participant: {participant!r}")
     data = dict(data or {})
-    allowed = set(RECORD_KINDS[kind])
+    allowed = RECORD_KINDS[kind]
     extra = set(data) - allowed
+    missing = allowed - set(data)
     if extra:
         raise SchemaError(
             f"{kind} carries undeclared data fields: {', '.join(sorted(extra))}"
         )
+    if missing:
+        # Absence is not permitted implicitly. A consumer reading an absent field
+        # cannot distinguish "not set" from "this producer forgot".
+        raise SchemaError(
+            f"{kind} is missing required data fields: {', '.join(sorted(missing))}"
+        )
     if participant in ("human", "system") and any((driver, provider, model)):
         raise SchemaError("human and system records must have null runner fields")
+    if kind in MODEL_KINDS and not driver:
+        raise SchemaError(
+            f"{kind} is model-generated and must carry a runner snapshot "
+            "(driver/provider/model)"
+        )
     return {
         "schema": SCHEMA_V2,
         "event_id": event_id or str(uuid.uuid4()),
@@ -121,7 +210,32 @@ def normalise(record: dict) -> dict:
     """
     if is_v2(record):
         out = dict(record)
+        kind = record.get("kind")
         out["_display_role"] = record.get("participant")
+        out["_error"] = kind in ("consult.failure", "invocation.failure")
+        data = record.get("data") or {}
+        # Limit evidence must reach the viewer whether it arrives as a dedicated
+        # invocation.limited record or inside a response's metadata.
+        if kind == "invocation.limited":
+            out["_limit"] = {
+                k: data.get(k)
+                for k in (
+                    "kind",
+                    "reason",
+                    "source",
+                    "evidence",
+                    "retry_after_seconds",
+                    "reset_at",
+                    "detector_version",
+                )
+            }
+        elif isinstance(data.get("metadata"), dict) and data["metadata"].get("limit"):
+            out["_limit"] = data["metadata"]["limit"]
+        # An unknown kind from a future producer renders as a neutral system
+        # note rather than being dropped or mislabelled as a participant turn.
+        if kind not in RECORD_KINDS:
+            out["_display_role"] = "system"
+            out["_unknown_kind"] = kind
         return out
 
     # v1: {ts, role, mode?, turn, project, thread, session_id?, partial?, error?, text}
@@ -264,17 +378,33 @@ def write_atomic(path: Path, payload: dict) -> None:
 
 
 def load_registry(v2_path: Path, v1_path: Path) -> dict:
-    """The authoritative v2 registry, importing v1 lazily when v2 is absent."""
+    """The authoritative v2 registry, importing v1 lazily only when v2 is ABSENT.
+
+    A v2 registry that exists but cannot be parsed raises. Falling back to v1
+    there would silently discard every v2-only run and lane session, because v1
+    cannot represent them -- the user would see a conversation that looks intact
+    and is not. Failing closed keeps the damage visible and recoverable from the
+    transcripts, which are the durable record.
+    """
     if v2_path.is_file():
         try:
             data = json.loads(v2_path.read_text(encoding="utf-8"))
-            if data.get("schema") == SCHEMA_V2:
-                return data
-        except json.JSONDecodeError:
-            pass  # fall through to v1 rather than losing every session
+        except json.JSONDecodeError as e:
+            raise RegistryCorrupt(
+                f"{v2_path} is unreadable: {e}. Refusing to fall back to the v1 "
+                "registry, which cannot represent runs or lane sessions. Move the "
+                "file aside to start fresh; the transcripts in log/ are intact."
+            ) from None
+        if data.get("schema") != SCHEMA_V2:
+            raise RegistryCorrupt(
+                f"{v2_path} does not declare schema {SCHEMA_V2}: refusing to guess."
+            )
+        return data
     if v1_path.is_file():
         try:
             return import_v1(json.loads(v1_path.read_text(encoding="utf-8")))
         except json.JSONDecodeError:
+            # v1 is a compatibility projection, not authoritative state, so an
+            # unreadable one degrades to empty rather than being fatal.
             return blank_v2()
     return blank_v2()

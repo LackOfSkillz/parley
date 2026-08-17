@@ -38,18 +38,18 @@ def v1(role, text, **kw):
 
 
 def v2(text, **kw):
-    base = dict(
-        conversation_id="c-1",
-        project="C:\\Dev\\proj",
-        thread="main",
-        kind="consult.response",
-        participant="reviewer",
-        data={"session_out": "s", "run_status": "completed", "metadata": {}},
-        text=text,
-        driver="codex",
-        provider="openai",
-        model="gpt-5",
-    )
+    base = {
+        "conversation_id": "c-1",
+        "project": "C:\\Dev\\proj",
+        "thread": "main",
+        "kind": "consult.response",
+        "participant": "reviewer",
+        "data": {"session_out": "s", "run_status": "completed", "metadata": {}},
+        "text": text,
+        "driver": "codex",
+        "provider": "openai",
+        "model": "gpt-5",
+    }
     base.update(kw)
     return json.dumps(make_record(**base))
 
@@ -137,6 +137,55 @@ class ServingIsConfined(ViewerHarness):
         self.assertEqual(
             serve.messages(f"absent-{HASH}", 0), {"total": 0, "messages": []}
         )
+
+
+class ParticipantIsNeverMisattributed(unittest.TestCase):
+    """A turn rendered as the wrong participant is this project's worst defect.
+
+    It happened: normalisation replaced the v1 `role` field with `participant`,
+    and a browser still running the previous JavaScript read `role`, found
+    nothing, and fell back to the default -- so every reviewer verdict displayed
+    as though the implementer had written it. The API contract is pinned here so
+    the failure cannot recur silently on the server side.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.logdir = Path(self.tmp.name)
+        p = mock.patch.object(serve, "LOGDIR", self.logdir)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def write(self, *lines):
+        (self.logdir / f"t-{HASH}.jsonl").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+
+    def msgs(self):
+        return serve.messages(f"t-{HASH}", 0)["messages"]
+
+    def test_every_served_record_carries_participant(self):
+        """The field the viewer keys on must always be present."""
+        self.write(v1("claude", "q"), v1("gpt", "a"), v2("v2 reply"))
+        for m in self.msgs():
+            self.assertIn(m.get("participant"), ("maker", "reviewer"))
+
+    def test_reviewer_turns_are_never_attributed_to_the_maker(self):
+        self.write(v1("claude", "q"), v1("gpt", "VERDICT reject"))
+        maker, reviewer = self.msgs()
+        self.assertEqual(maker["participant"], "maker")
+        self.assertEqual(reviewer["participant"], "reviewer")
+        self.assertIn("VERDICT", reviewer["text"])
+
+    def test_an_alternating_transcript_alternates_exactly(self):
+        lines = []
+        for i in range(6):
+            lines.append(v1("claude", f"q{i}"))
+            lines.append(v1("gpt", f"a{i}"))
+        self.write(*lines)
+        lanes = [m["participant"] for m in self.msgs()]
+        self.assertEqual(lanes, ["maker", "reviewer"] * 6)
 
 
 if __name__ == "__main__":

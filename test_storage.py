@@ -18,6 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from parley_core import storage
 from parley_core.storage import (
+    RegistryCorrupt,
     SchemaError,
     blank_v2,
     import_v1,
@@ -42,19 +43,22 @@ V1_ENTRY = {
 
 class RecordEnvelope(unittest.TestCase):
     def rec(self, **kw):
-        base = dict(
-            conversation_id="c-1",
-            project="/p",
-            thread="main",
-            kind="consult.prompt",
-            participant="maker",
-            data={
+        base = {
+            "conversation_id": "c-1",
+            "project": "/p",
+            "thread": "main",
+            "kind": "consult.prompt",
+            "participant": "maker",
+            "data": {
                 "mode": "ask",
                 "attached": [],
                 "access_policy": "read_only",
                 "session_in": None,
             },
-        )
+            "driver": "codex",
+            "provider": "openai",
+            "model": "gpt-5",
+        }
         base.update(kw)
         return make_record(**base)
 
@@ -175,13 +179,37 @@ class RegistryRoundTrip(unittest.TestCase):
             write_atomic(v2, authoritative)
             self.assertEqual(list(load_registry(v2, v1)["conversations"]), ["c-2"])
 
-    def test_corrupt_v2_falls_back_to_v1_rather_than_losing_sessions(self):
+    def test_a_corrupt_v2_registry_fails_closed(self):
+        """v1 cannot represent runs or lane sessions.
+
+        Falling back would present a v2 conversation as though those had never
+        existed -- intact-looking and wrong. Failing loudly keeps the damage
+        visible, and the transcripts remain the durable record.
+        """
         with tempfile.TemporaryDirectory() as d:
             v1 = Path(d) / "threads.json"
             v2 = Path(d) / "registry-v2.json"
             v1.write_text(json.dumps({"c-1": V1_ENTRY}), encoding="utf-8")
             v2.write_text("{ not json", encoding="utf-8")
-            self.assertEqual(list(load_registry(v2, v1)["conversations"]), ["c-1"])
+            with self.assertRaises(RegistryCorrupt) as ctx:
+                load_registry(v2, v1)
+            self.assertIn("Refusing to fall back", str(ctx.exception))
+
+    def test_a_v2_registry_with_the_wrong_schema_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            v2 = Path(d) / "registry-v2.json"
+            v2.write_text(json.dumps({"schema": 99}), encoding="utf-8")
+            with self.assertRaises(RegistryCorrupt):
+                load_registry(v2, Path(d) / "threads.json")
+
+    def test_an_unreadable_v1_degrades_to_empty_rather_than_raising(self):
+        """v1 is a compatibility projection, not authoritative state."""
+        with tempfile.TemporaryDirectory() as d:
+            v1 = Path(d) / "threads.json"
+            v1.write_text("{ not json", encoding="utf-8")
+            self.assertEqual(
+                load_registry(Path(d) / "registry-v2.json", v1), blank_v2()
+            )
 
     def test_absent_registries_give_an_empty_v2(self):
         with tempfile.TemporaryDirectory() as d:
