@@ -21,6 +21,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from parley_core import storage
+
 HERE = Path(__file__).resolve().parent
 LOGDIR = HERE / "log"
 PORT = 4688
@@ -60,18 +62,12 @@ def threads() -> list[dict]:
 
 
 def read_log(path: Path) -> list[dict]:
-    if not path.is_file():
-        return []
-    recs = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            recs.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return recs
+    """Every record, normalised so v1 and v2 render through one path.
+
+    The projection happens at READ time. Nothing on disk is rewritten -- an
+    append-only transcript that gets rewritten stops being evidence.
+    """
+    return storage.read_transcript(path)
 
 
 def messages(tid: str, since: int) -> dict:
@@ -103,7 +99,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Parley</title><style>
 *{box-sizing:border-box}
 :root{--bg:#0d1117;--panel:#161b22;--edge:#21262d;--txt:#c9d1d9;--dim:#7d8590;
---claude:#d97757;--gpt:#10a37f;--accent:#58a6ff;--bad:#f85149}
+--claude:#d97757;--gpt:#10a37f;--accent:#58a6ff;--bad:#f85149;--warn:#d29922}
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--txt);
 font:14px/1.55 ui-sans-serif,-apple-system,"Segoe UI",sans-serif;display:flex}
@@ -139,6 +135,8 @@ font:13px/1.6 ui-monospace,"Cascadia Code",Consolas,monospace}
 .claude pre{border-left:3px solid var(--claude)}
 .gpt pre{border-left:3px solid var(--gpt)}
 .err pre{border-left:3px solid var(--bad)}
+.lim pre{border-left:3px solid var(--warn)}
+.lim .nm{color:var(--warn)} .lim .pill{background:var(--warn)}
 .err .nm{color:var(--bad)} .err .pill{background:var(--bad)}
 .fold{max-height:280px;overflow:hidden;position:relative}
 .fold::after{content:"";position:absolute;left:0;right:0;bottom:0;height:70px;
@@ -195,16 +193,35 @@ async function loadThreads(){
 }
 
 function render(m){
-  const who=m.error?'err':(m.role==='gpt'?'gpt':'claude');
+  // v1 encoded the vendor in the role; v2 records a lane plus the runner that
+  // produced the turn. Both normalise to a lane before we get here.
+  const lane = m.participant || (m.role==='gpt'?'reviewer':'maker');
+  const failed = m._error || m.kind==='consult.failure';
+  const lim = (m.data && m.data.limit) || m.limit;
+  const who = failed ? 'err' : (lim ? 'lim' : (lane==='reviewer'?'gpt':'claude'));
   const el=document.createElement('div'); el.className='msg '+who;
+  const d = m.data || {};
   const bits=[clock(m.ts)];
-  if(m.mode) bits.push(m.mode);
-  if(m.turn) bits.push('turn '+m.turn);
-  if(m.attached&&m.attached.length) bits.push('+'+m.attached.join(', '));
-  if(m.tokens_out) bits.push(m.tokens_in+' in / '+m.tokens_out+' out');
+  if(d.mode) bits.push(d.mode);
+  if(m.lane_turn) bits.push('turn '+m.lane_turn);
+  if(d.attached&&d.attached.length) bits.push('+'+d.attached.join(', '));
+  // Runner identity is a v2 fact. v1 records genuinely do not have it, and
+  // showing a guessed one would be worse than showing none.
+  if(m.driver) bits.push([m.driver,m.provider,m.model].filter(Boolean).join('/'));
+  else if(m.schema===1) bits.push('v1 record · runner unknown');
+  if(d.partial||d.run_status==='partial') bits.push('partial');
+  // §11: never let a structural inference read as an observed capture, or a
+  // guessed backoff read as provider instruction.
+  if(lim){
+    bits.push('limit: '+(lim.kind||'?'));
+    bits.push('evidence: '+(lim.evidence||'unknown'));
+    bits.push(lim.retry_after_seconds
+      ? ('provider asked '+lim.retry_after_seconds+'s')
+      : 'wait would be a guess');
+  }
   const long=(m.text||'').length>1400;
   el.innerHTML=`<div class="who"><span class="pill"></span>
-    <span class="nm">${who==='err'?'FAILED':who==='gpt'?'GPT':'Claude'}</span>
+    <span class="nm">${who==='err'?'FAILED':who==='lim'?'LIMITED':lane.toUpperCase()}</span>
     <span class="meta">${esc(bits.join(' \\u00b7 '))}</span></div>
     <pre class="${long?'fold':''}">${esc(m.text)}</pre>
     ${long?'<button class="more">show full message</button>':''}`;
