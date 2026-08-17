@@ -15,7 +15,6 @@ Usage:  python serve.py            (http://localhost:4688)
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,18 +26,6 @@ from parley_core import storage
 HERE = Path(__file__).resolve().parent
 LOGDIR = HERE / "log"
 PORT = 4688
-
-
-def build_id() -> str:
-    """Fingerprint of the served page.
-
-    A page kept open across a server change keeps running the OLD script against
-    the NEW API. That produced a viewer which labelled every reviewer verdict as
-    the implementer's -- silent, and exactly the misattribution this project
-    cannot afford. The client compares this on every poll and reloads itself
-    when it changes, so a stale tab cannot lie about who said what.
-    """
-    return hashlib.sha256(PAGE.encode("utf-8")).hexdigest()[:12]
 
 
 # Transcripts written by parley.py end in a 32-hex digest of the canonical
@@ -170,7 +157,7 @@ padding:2px 6px;font:12px ui-monospace,monospace;color:var(--txt)}
   Run <kbd>parley.py</kbd> and messages appear here live.</div></div>
 </main>
 <script>
-let sel=null, seen=0, pinned=true, gen=0, BUILD=null;
+let sel=null, seen=0, pinned=true, gen=0;
 const feed=document.getElementById('feed');
 const EMPTY='<div class="empty">No conversations yet.<br>'
   +'Run <kbd>parley.py</kbd> and messages appear here live.</div>';
@@ -260,17 +247,6 @@ function render(m){
   feed.appendChild(el);
 }
 
-async function checkBuild(){
-  // If the server's page changed, this tab is running stale code against a new
-  // contract. Reload rather than render something misleading.
-  try{
-    const r = await fetch('/api/build');
-    const {build} = await r.json();
-    if(BUILD === null){ BUILD = build; return; }
-    if(build !== BUILD){ location.reload(); }
-  }catch(e){ /* server restarting; try again next tick */ }
-}
-
 async function poll(){
   // Snapshot the target and a generation counter. A fetch started for thread A
   // can resolve after the user has switched to B; without this the late reply
@@ -291,8 +267,7 @@ async function poll(){
     document.getElementById('status').textContent='watching';
   }catch(e){ document.getElementById('status').textContent='disconnected'; }
 }
-loadThreads(); checkBuild();
-setInterval(poll,1500); setInterval(loadThreads,6000); setInterval(checkBuild,3000);
+loadThreads(); setInterval(poll,1500); setInterval(loadThreads,6000);
 </script></body></html>"""
 
 
@@ -301,10 +276,6 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path in ("/", "/index.html"):
             return self.send(PAGE.encode("utf-8"), "text/html; charset=utf-8")
-        if u.path == "/api/build":
-            return self.send(
-                json.dumps({"build": build_id()}).encode(), "application/json"
-            )
         if u.path == "/api/threads":
             return self.send(json.dumps(threads()).encode(), "application/json")
         if u.path == "/api/messages":
