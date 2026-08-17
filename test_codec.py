@@ -2,7 +2,7 @@
 
 Written because the first RECORD_KINDS table silently omitted
 `invocation.response`, `invocation.failure`, `review.verdict`, `run.finished`
-and all five limit kinds. A codec that rejects records the spec mandates would
+and all four limit kinds. A codec that rejects records the spec mandates would
 have blocked every later dispatch, and nothing would have caught it until a
 producer tried to write one.
 

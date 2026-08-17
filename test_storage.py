@@ -356,5 +356,128 @@ class MixedSchemaTranscripts(unittest.TestCase):
         self.assertEqual(json.dumps(original, sort_keys=True), snapshot)
 
 
+class RegistryCorruptionIsAlwaysLoud(unittest.TestCase):
+    """Every way an authoritative registry can be wrong must fail closed.
+
+    Returning a structurally invalid registry is the same data loss as reading a
+    corrupt one, only deferred to whichever caller trips over it first.
+    """
+
+    def load(self, content, *, v1=True):
+        d = tempfile.mkdtemp()
+        v2p = Path(d) / "registry-v2.json"
+        v1p = Path(d) / "threads.json"
+        if isinstance(content, bytes):
+            v2p.write_bytes(content)
+        else:
+            v2p.write_text(content, encoding="utf-8")
+        if v1:
+            v1p.write_text(json.dumps({"c-1": V1_ENTRY}), encoding="utf-8")
+        return lambda: load_registry(v2p, v1p)
+
+    def test_malformed_json_fails_closed(self):
+        with self.assertRaises(RegistryCorrupt):
+            self.load("{ not json")()
+
+    def test_a_non_object_root_fails_closed(self):
+        with self.assertRaises(RegistryCorrupt):
+            self.load(json.dumps([1, 2, 3]))()
+
+    def test_the_wrong_schema_fails_closed(self):
+        with self.assertRaises(RegistryCorrupt):
+            self.load(json.dumps({"schema": 99, "conversations": {}}))()
+
+    def test_missing_conversations_fails_closed(self):
+        with self.assertRaises(RegistryCorrupt):
+            self.load(json.dumps({"schema": 2}))()
+
+    def test_non_object_conversations_fails_closed(self):
+        with self.assertRaises(RegistryCorrupt):
+            self.load(json.dumps({"schema": 2, "conversations": []}))()
+
+    def test_undecodable_bytes_fail_closed(self):
+        with self.assertRaises(RegistryCorrupt):
+            self.load(bytes([0xFF, 0xFE, 0x00]) + b" not utf-8")()
+
+    def test_a_read_failure_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            v2p = Path(d) / "registry-v2.json"
+            v2p.write_text(
+                json.dumps({"schema": 2, "conversations": {}}), encoding="utf-8"
+            )
+            with (
+                mock.patch.object(Path, "read_text", side_effect=OSError("locked")),
+                self.assertRaises(RegistryCorrupt),
+            ):
+                load_registry(v2p, Path(d) / "threads.json")
+
+    def test_the_message_names_the_file_and_says_the_transcripts_survive(self):
+        with self.assertRaises(RegistryCorrupt) as ctx:
+            self.load("{ not json")()
+        msg = str(ctx.exception)
+        self.assertIn("registry-v2.json", msg)
+        self.assertIn("transcripts in log/ are intact", msg)
+
+    def test_a_valid_registry_still_loads(self):
+        good = json.dumps({"schema": 2, "conversations": {"c": {"project": "/p"}}})
+        self.assertEqual(list(self.load(good)()["conversations"]), ["c"])
+
+
+class V1DegradesQuietly(unittest.TestCase):
+    """v1 is a compatibility projection, so every read failure degrades alike."""
+
+    def test_malformed_v1_degrades_to_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            v1 = Path(d) / "threads.json"
+            v1.write_text("{ not json", encoding="utf-8")
+            self.assertEqual(load_registry(Path(d) / "r.json", v1), blank_v2())
+
+    def test_a_v1_read_failure_degrades_to_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            v1 = Path(d) / "threads.json"
+            v1.write_text("{}", encoding="utf-8")
+            with mock.patch.object(Path, "read_text", side_effect=OSError("locked")):
+                self.assertEqual(load_registry(Path(d) / "r.json", v1), blank_v2())
+
+    def test_a_non_object_v1_root_degrades_to_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            v1 = Path(d) / "threads.json"
+            v1.write_text(json.dumps([1, 2]), encoding="utf-8")
+            self.assertEqual(load_registry(Path(d) / "r.json", v1), blank_v2())
+
+
+class RunnerSnapshotRequirements(unittest.TestCase):
+    def test_driver_and_provider_are_both_required(self):
+        for missing in ("driver", "provider"):
+            with self.subTest(missing=missing):
+                kw = {"driver": "codex", "provider": "openai", "model": "gpt-5"}
+                kw[missing] = None
+                with self.assertRaises(SchemaError):
+                    make_record(
+                        conversation_id="c",
+                        project="/p",
+                        thread="t",
+                        kind="consult.response",
+                        participant="reviewer",
+                        data={"session_out": None, "run_status": None, "metadata": {}},
+                        **kw,
+                    )
+
+    def test_model_may_be_null(self):
+        """Null model means the runner's configured default, which is legitimate."""
+        rec = make_record(
+            conversation_id="c",
+            project="/p",
+            thread="t",
+            kind="consult.response",
+            participant="reviewer",
+            data={"session_out": None, "run_status": None, "metadata": {}},
+            driver="codex",
+            provider="openai",
+            model=None,
+        )
+        self.assertIsNone(rec["model"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

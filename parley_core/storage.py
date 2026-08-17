@@ -171,10 +171,13 @@ def make_record(
         )
     if participant in ("human", "system") and any((driver, provider, model)):
         raise SchemaError("human and system records must have null runner fields")
-    if kind in MODEL_KINDS and not driver:
+    if kind in MODEL_KINDS and not (driver and provider):
+        # model may legitimately be None -- it means "the runner's configured
+        # default". driver and provider cannot be: without them the record
+        # cannot say what produced it.
         raise SchemaError(
-            f"{kind} is model-generated and must carry a runner snapshot "
-            "(driver/provider/model)"
+            f"{kind} is model-generated and must carry a runner snapshot: "
+            "driver and provider are required (model may be null)"
         )
     return {
         "schema": SCHEMA_V2,
@@ -387,24 +390,40 @@ def load_registry(v2_path: Path, v1_path: Path) -> dict:
     transcripts, which are the durable record.
     """
     if v2_path.is_file():
-        try:
-            data = json.loads(v2_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            raise RegistryCorrupt(
-                f"{v2_path} is unreadable: {e}. Refusing to fall back to the v1 "
-                "registry, which cannot represent runs or lane sessions. Move the "
-                "file aside to start fresh; the transcripts in log/ are intact."
-            ) from None
-        if data.get("schema") != SCHEMA_V2:
-            raise RegistryCorrupt(
-                f"{v2_path} does not declare schema {SCHEMA_V2}: refusing to guess."
+
+        def corrupt(why: str):
+            return RegistryCorrupt(
+                f"{v2_path} {why}. Refusing to fall back to the v1 registry, which "
+                "cannot represent runs or lane sessions. Move the file aside to "
+                "start fresh; the transcripts in log/ are intact."
             )
+
+        try:
+            raw = v2_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            raise corrupt(f"could not be read: {e}") from None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise corrupt(f"is not valid JSON: {e}") from None
+        # Validate the shape before returning it. Handing back a structurally
+        # wrong registry is the same data loss as reading a corrupt one, just
+        # deferred to whichever caller trips over it first.
+        if not isinstance(data, dict):
+            raise corrupt("is not a JSON object")
+        if data.get("schema") != SCHEMA_V2:
+            raise corrupt(f"does not declare schema {SCHEMA_V2}")
+        if not isinstance(data.get("conversations"), dict):
+            raise corrupt("has a missing or non-object 'conversations'")
         return data
     if v1_path.is_file():
+        # v1 is a compatibility projection, not authoritative state: an
+        # unreadable one degrades to empty rather than being fatal. Every read
+        # failure is treated alike, not just malformed JSON.
         try:
             return import_v1(json.loads(v1_path.read_text(encoding="utf-8")))
-        except json.JSONDecodeError:
-            # v1 is a compatibility projection, not authoritative state, so an
-            # unreadable one degrades to empty rather than being fatal.
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return blank_v2()
+        except AttributeError:
+            return blank_v2()  # a non-object root
     return blank_v2()

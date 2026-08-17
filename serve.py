@@ -195,9 +195,12 @@ async function loadThreads(){
 function render(m){
   // v1 encoded the vendor in the role; v2 records a lane plus the runner that
   // produced the turn. Both normalise to a lane before we get here.
-  const lane = m.participant || (m.role==='gpt'?'reviewer':'maker');
-  const failed = m._error || m.kind==='consult.failure';
-  const lim = (m.data && m.data.limit) || m.limit;
+  // Consume the normalised contract ONLY. An untested fallback to another
+  // field name is what let a browser render every reviewer verdict as the
+  // implementer's after normalisation renamed `role` to `participant`.
+  const lane = m._display_role;
+  const failed = m._error === true;
+  const lim = m._limit || null;
   const who = failed ? 'err' : (lim ? 'lim' : (lane==='reviewer'?'gpt':'claude'));
   const el=document.createElement('div'); el.className='msg '+who;
   const d = m.data || {};
@@ -209,6 +212,7 @@ function render(m){
   // showing a guessed one would be worse than showing none.
   if(m.driver) bits.push([m.driver,m.provider,m.model].filter(Boolean).join('/'));
   else if(m.schema===1) bits.push('v1 record · runner unknown');
+  if(m._unknown_kind) bits.push('unrecognised kind: '+m._unknown_kind);
   if(d.partial||d.run_status==='partial') bits.push('partial');
   // §11: never let a structural inference read as an observed capture, or a
   // guessed backoff read as provider instruction.
@@ -221,7 +225,7 @@ function render(m){
   }
   const long=(m.text||'').length>1400;
   el.innerHTML=`<div class="who"><span class="pill"></span>
-    <span class="nm">${who==='err'?'FAILED':who==='lim'?'LIMITED':lane.toUpperCase()}</span>
+    <span class="nm">${who==='err'?'FAILED':who==='lim'?'LIMITED':(lane||'system').toUpperCase()}</span>
     <span class="meta">${esc(bits.join(' \\u00b7 '))}</span></div>
     <pre class="${long?'fold':''}">${esc(m.text)}</pre>
     ${long?'<button class="more">show full message</button>':''}`;
