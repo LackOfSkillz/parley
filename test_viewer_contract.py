@@ -17,6 +17,7 @@ import json
 import re
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -27,15 +28,17 @@ from parley_core.storage import make_record
 
 HASH = "b" * 32
 RUNNER = {"driver": "codex", "provider": "openai", "model": "gpt-5"}
-LIMIT = {
-    "kind": "rate",
-    "reason": "slow down",
-    "source": "json",
-    "evidence": "structural",
-    "retry_after_seconds": 300,
-    "reset_at": None,
-    "detector_version": "codex/0.147.0/1",
-}
+LIMIT = types.MappingProxyType(
+    {
+        "kind": "rate",
+        "reason": "slow down",
+        "source": "json",
+        "evidence": "structural",
+        "retry_after_seconds": 300,
+        "reset_at": None,
+        "detector_version": "codex/0.147.0/1",
+    }
+)
 
 
 class ServedShape(unittest.TestCase):
@@ -96,7 +99,7 @@ class ServedShape(unittest.TestCase):
         recs = self.serve_records(
             self.v2(
                 "invocation.limited",
-                {"logical_turn_id": "u", "attempt": 1, **LIMIT},
+                {"logical_turn_id": "u", "attempt": 1, **dict(LIMIT)},
             )
         )
         self.assertEqual(recs[0]["_limit"]["evidence"], "structural")
@@ -109,7 +112,7 @@ class ServedShape(unittest.TestCase):
                 {
                     "session_out": None,
                     "run_status": "limited",
-                    "metadata": {"limit": LIMIT},
+                    "metadata": {"limit": dict(LIMIT)},
                 },
             )
         )
@@ -172,6 +175,120 @@ class RenderingCodeUsesOnlyTheContract(unittest.TestCase):
 
     def test_a_missing_lane_cannot_crash_the_label(self):
         self.assertTrue(re.search(r"\(lane\s*\|\|\s*'system'\)", self.js))
+
+
+class WaitingLimitRenders(unittest.TestCase):
+    """§11 requires a wait in progress to be a DISTINCT state from a classified one."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.logdir = Path(self.tmp.name)
+        patch = mock.patch.object(serve, "LOGDIR", self.logdir)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    WAIT = types.MappingProxyType(
+        {
+            "logical_turn_id": "u-1",
+            "attempt": 2,
+            "detected_at": "2026-08-17T00:00:00Z",
+            "reason": "rate limited",
+            "source": "json",
+            "evidence": "structural",
+            "blind": True,
+            "resume_after": "2026-08-17T00:05:00Z",
+            "wait_seconds": 300,
+            "cumulative_wait_seconds": 300,
+        }
+    )
+
+    def served(self, kind, data):
+        rec = make_record(
+            conversation_id="c",
+            project="/p",
+            thread="t",
+            kind=kind,
+            participant="reviewer",
+            data=data,
+            **RUNNER,
+        )
+        (self.logdir / f"w-{HASH}.jsonl").write_text(
+            json.dumps(rec) + "\n", encoding="utf-8"
+        )
+        return serve.messages(f"w-{HASH}", 0)["messages"][0]
+
+    def test_a_wait_record_declares_the_waiting_state(self):
+        m = self.served("limit.wait", dict(self.WAIT))
+        self.assertEqual(m["_limit_state"], "WAITING_LIMIT")
+
+    def test_a_classified_but_unwaited_limit_stays_limited(self):
+        m = self.served(
+            "invocation.limited",
+            {
+                "logical_turn_id": "u",
+                "attempt": 1,
+                "kind": "rate",
+                "reason": "r",
+                "source": "json",
+                "evidence": "structural",
+                "retry_after_seconds": None,
+                "reset_at": None,
+                "detector_version": "codex/0.147.0/1",
+            },
+        )
+        self.assertEqual(m["_limit_state"], "LIMITED")
+
+    def test_blind_is_carried_explicitly_not_inferred(self):
+        m = self.served("limit.wait", dict(self.WAIT))
+        self.assertIs(m["_limit"]["blind"], True)
+
+    def test_provider_directed_waits_say_so(self):
+        w = dict(self.WAIT, blind=False)
+        self.assertIs(self.served("limit.wait", w)["_limit"]["blind"], False)
+
+    def test_wait_seconds_and_resume_time_are_served(self):
+        m = self.served("limit.wait", dict(self.WAIT))
+        self.assertEqual(m["_wait"]["wait_seconds"], 300)
+        self.assertEqual(m["_wait"]["resume_after"], "2026-08-17T00:05:00Z")
+
+    def test_evidence_grade_is_served_for_a_wait(self):
+        self.assertEqual(
+            self.served("limit.wait", dict(self.WAIT))["_limit"]["evidence"],
+            "structural",
+        )
+
+
+class RenderBodyOnly(unittest.TestCase):
+    """Scope the static assertions to render(), so a comment cannot satisfy them."""
+
+    def setUp(self):
+        src = (Path(__file__).resolve().parent / "serve.py").read_text(encoding="utf-8")
+        body = re.search(r"function render\(m\)\{(.*?)\n\}", src, re.DOTALL)
+        assert body, "could not isolate render()"
+        # strip // comments so prose cannot satisfy a check
+        self.body = re.sub(r"//[^\n]*", "", body.group(1))
+
+    def test_render_uses_display_role(self):
+        self.assertIn("m._display_role", self.body)
+
+    def test_render_uses_the_error_flag(self):
+        self.assertIn("m._error === true", self.body)
+
+    def test_render_uses_the_limit_field(self):
+        self.assertIn("m._limit", self.body)
+
+    def test_render_uses_the_limit_state_for_the_label(self):
+        self.assertIn("limState", self.body)
+
+    def test_render_uses_the_explicit_blind_field(self):
+        self.assertIn("lim.blind", self.body)
+
+    def test_render_shows_the_resume_time(self):
+        self.assertIn("resume_after", self.body)
+
+    def test_render_never_reads_the_removed_role_field(self):
+        self.assertNotIn("m.role", self.body)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ Usage:  python serve.py            (http://localhost:4688)
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +27,18 @@ from parley_core import storage
 HERE = Path(__file__).resolve().parent
 LOGDIR = HERE / "log"
 PORT = 4688
+
+
+def build_id() -> str:
+    """Fingerprint of the served page.
+
+    A page kept open across a server change keeps running the OLD script against
+    the NEW API. That produced a viewer which labelled every reviewer verdict as
+    the implementer's -- silent, and exactly the misattribution this project
+    cannot afford. The client compares this on every poll and reloads itself
+    when it changes, so a stale tab cannot lie about who said what.
+    """
+    return hashlib.sha256(PAGE.encode("utf-8")).hexdigest()[:12]
 
 
 # Transcripts written by parley.py end in a 32-hex digest of the canonical
@@ -157,7 +170,7 @@ padding:2px 6px;font:12px ui-monospace,monospace;color:var(--txt)}
   Run <kbd>parley.py</kbd> and messages appear here live.</div></div>
 </main>
 <script>
-let sel=null, seen=0, pinned=true, gen=0;
+let sel=null, seen=0, pinned=true, gen=0, BUILD=null;
 const feed=document.getElementById('feed');
 const EMPTY='<div class="empty">No conversations yet.<br>'
   +'Run <kbd>parley.py</kbd> and messages appear here live.</div>';
@@ -201,6 +214,8 @@ function render(m){
   const lane = m._display_role;
   const failed = m._error === true;
   const lim = m._limit || null;
+  const limState = m._limit_state || null;
+  const wait = m._wait || null;
   const who = failed ? 'err' : (lim ? 'lim' : (lane==='reviewer'?'gpt':'claude'));
   const el=document.createElement('div'); el.className='msg '+who;
   const d = m.data || {};
@@ -217,15 +232,23 @@ function render(m){
   // §11: never let a structural inference read as an observed capture, or a
   // guessed backoff read as provider instruction.
   if(lim){
-    bits.push('limit: '+(lim.kind||'?'));
+    if(lim.kind) bits.push('limit: '+lim.kind);
     bits.push('evidence: '+(lim.evidence||'unknown'));
-    bits.push(lim.retry_after_seconds
-      ? ('provider asked '+lim.retry_after_seconds+'s')
-      : 'wait would be a guess');
+    if(wait){
+      // `blind` is explicit in the record. Never infer it: a guessed backoff
+      // shown as provider instruction is the misrepresentation §11 forbids.
+      bits.push(lim.blind ? 'blind backoff' : 'provider-directed');
+      if(wait.wait_seconds) bits.push('waiting '+wait.wait_seconds+'s');
+      if(wait.resume_after) bits.push('resumes '+wait.resume_after);
+    } else {
+      bits.push(lim.retry_after_seconds
+        ? ('provider asked '+lim.retry_after_seconds+'s')
+        : 'wait would be a guess');
+    }
   }
   const long=(m.text||'').length>1400;
   el.innerHTML=`<div class="who"><span class="pill"></span>
-    <span class="nm">${who==='err'?'FAILED':who==='lim'?'LIMITED':(lane||'system').toUpperCase()}</span>
+    <span class="nm">${who==='err'?'FAILED':who==='lim'?(limState||'LIMITED'):(lane||'system').toUpperCase()}</span>
     <span class="meta">${esc(bits.join(' \\u00b7 '))}</span></div>
     <pre class="${long?'fold':''}">${esc(m.text)}</pre>
     ${long?'<button class="more">show full message</button>':''}`;
@@ -235,6 +258,17 @@ function render(m){
       b.textContent=f?'show full message':'collapse';};
   }
   feed.appendChild(el);
+}
+
+async function checkBuild(){
+  // If the server's page changed, this tab is running stale code against a new
+  // contract. Reload rather than render something misleading.
+  try{
+    const r = await fetch('/api/build');
+    const {build} = await r.json();
+    if(BUILD === null){ BUILD = build; return; }
+    if(build !== BUILD){ location.reload(); }
+  }catch(e){ /* server restarting; try again next tick */ }
 }
 
 async function poll(){
@@ -257,7 +291,8 @@ async function poll(){
     document.getElementById('status').textContent='watching';
   }catch(e){ document.getElementById('status').textContent='disconnected'; }
 }
-loadThreads(); setInterval(poll,1500); setInterval(loadThreads,6000);
+loadThreads(); checkBuild();
+setInterval(poll,1500); setInterval(loadThreads,6000); setInterval(checkBuild,3000);
 </script></body></html>"""
 
 
@@ -266,6 +301,10 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path in ("/", "/index.html"):
             return self.send(PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        if u.path == "/api/build":
+            return self.send(
+                json.dumps({"build": build_id()}).encode(), "application/json"
+            )
         if u.path == "/api/threads":
             return self.send(json.dumps(threads()).encode(), "application/json")
         if u.path == "/api/messages":

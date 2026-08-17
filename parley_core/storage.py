@@ -232,8 +232,24 @@ def normalise(record: dict) -> dict:
                     "detector_version",
                 )
             }
+            # Classified, but nothing is waiting yet.
+            out["_limit_state"] = "LIMITED"
+        elif kind == "limit.wait":
+            # A wait in progress is a DISTINCT state from a classified limit.
+            # `blind` is carried explicitly rather than inferred from a missing
+            # retry-after: the producer knows which it was, and a reader
+            # guessing could present a guessed backoff as provider instruction.
+            out["_limit"] = {
+                k: data.get(k) for k in ("reason", "source", "evidence", "blind")
+            }
+            out["_limit_state"] = "WAITING_LIMIT"
+            out["_wait"] = {
+                k: data.get(k)
+                for k in ("wait_seconds", "resume_after", "cumulative_wait_seconds")
+            }
         elif isinstance(data.get("metadata"), dict) and data["metadata"].get("limit"):
             out["_limit"] = data["metadata"]["limit"]
+            out["_limit_state"] = "LIMITED"
         # An unknown kind from a future producer renders as a neutral system
         # note rather than being dropped or mislabelled as a participant turn.
         if kind not in RECORD_KINDS:
